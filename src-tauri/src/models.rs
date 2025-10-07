@@ -1,0 +1,91 @@
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fmt::{self, Display};
+use tokio::sync::RwLock;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum Provider {
+    Gmail,
+    Outlook,
+    Yahoo,
+}
+
+impl Provider {
+    pub fn imap_host(&self) -> &'static str {
+        match self {
+            Provider::Gmail => "imap.gmail.com",
+            Provider::Outlook => "outlook.office365.com",
+            Provider::Yahoo => "imap.mail.yahoo.com",
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Provider::Gmail => "Gmail",
+            Provider::Outlook => "Outlook / Live",
+            Provider::Yahoo => "Yahoo Mail",
+        }
+    }
+}
+
+impl Display for Provider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.display_name())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Account {
+    pub provider: Provider,
+    pub email: String,
+    pub display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailSummary {
+    pub uid: String,
+    pub subject: String,
+    pub from: String,
+    pub date: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Credentials {
+    pub provider: Provider,
+    pub email: String,
+    pub password: String,
+}
+
+impl Credentials {
+    pub fn new(provider: Provider, email: String, password: String) -> Self {
+        Self {
+            provider,
+            email,
+            password,
+        }
+    }
+
+    pub fn key(&self) -> String {
+        format!("{}::{}", self.provider.display_name(), self.email)
+    }
+
+    pub fn account(&self) -> Account {
+        Account {
+            provider: self.provider,
+            email: self.email.clone(),
+            display_name: None,
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct AppState {
+    pub accounts: RwLock<HashMap<String, Credentials>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConnectAccountResponse {
+    pub account: Account,
+    pub emails: Vec<EmailSummary>,
+}

@@ -1,0 +1,15 @@
+# Node / frontend
+node_modules/
+dist/
+*.log
+
+# Tauri build artifacts
+src-tauri/target/
+src-tauri/tauri.conf.local.*
+
+# macOS
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
