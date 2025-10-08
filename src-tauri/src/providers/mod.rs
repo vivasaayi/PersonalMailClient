@@ -46,6 +46,33 @@ pub async fn fetch_recent(
     imap::fetch_recent(credentials, limit).await
 }
 
+#[derive(Debug, Clone)]
+pub struct MessageEnvelope {
+    pub summary: EmailSummary,
+    pub snippet: Option<String>,
+    pub body: Option<Vec<u8>>,
+    pub flags: Vec<String>,
+}
+
+pub async fn fetch_all(
+    credentials: &Credentials,
+    chunk_size: usize,
+) -> Result<Vec<MessageEnvelope>, ProviderError> {
+    imap::fetch_all(credentials, chunk_size).await
+}
+
+pub async fn delete_message(credentials: &Credentials, uid: &str) -> Result<(), ProviderError> {
+    imap::delete_message(credentials, uid).await
+}
+
+pub async fn move_blocked_to_folder(
+    credentials: &Credentials,
+    senders: &[String],
+    target_folder: &str,
+) -> Result<usize, ProviderError> {
+    imap::move_blocked(credentials, senders, target_folder).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

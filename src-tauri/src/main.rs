@@ -1,15 +1,19 @@
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
-use personal_mail_client::models::{AppState, ConnectAccountResponse, Credentials, EmailSummary, Provider};
+use personal_mail_client::models::{AppState, ConnectAccountResponse, Credentials, EmailSummary, Provider, SyncHandle, SyncReport};
 use personal_mail_client::providers::{self, ProviderError};
-use tauri::State;
+use personal_mail_client::storage::{AnalysisInsert, MessageInsert, SenderStatus, Storage};
+use serde::Serialize;
+use tauri::{Manager, State};
 use tracing::{debug, error, info, Level, warn};
+use tokio::time::{self, Duration, MissedTickBehavior};
+use tokio_util::sync::CancellationToken;
+use std::time::Instant;
 use warp::Filter;
 use oauth2::{AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge, RedirectUrl, Scope, TokenResponse};
 use std::collections::HashMap;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
-use tokio::time;
 
 fn init_tracing() {
     let _ = tracing_subscriber::fmt()
@@ -19,6 +23,28 @@ fn init_tracing() {
         )
         .with_max_level(Level::INFO)
         .try_init();
+}
+
+#[derive(Serialize)]
+struct MessageItem {
+    uid: String,
+    subject: String,
+    date: Option<String>,
+    snippet: Option<String>,
+    status: String,
+    flags: Option<String>,
+    analysis_summary: Option<String>,
+    analysis_sentiment: Option<String>,
+    analysis_categories: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct SenderGroupResponse {
+    sender_email: String,
+    sender_display: String,
+    status: String,
+    message_count: usize,
+    messages: Vec<MessageItem>,
 }
 
 #[tauri::command]
@@ -54,6 +80,20 @@ async fn connect_account(
         .await
         .insert(normalized_email.clone(), credentials);
 
+    let mut inserts = Vec::with_capacity(emails.len());
+    let mut analyses = Vec::with_capacity(emails.len());
+    for summary in &emails {
+        let (insert, analysis) = build_records(&normalized_email, summary, None, None, None);
+        inserts.push(insert);
+        analyses.push(analysis);
+    }
+
+    if let Err(err) = state.storage.upsert_messages(inserts).await {
+        error!(%normalized_email, ?err, "failed to persist message cache");
+    }
+    if let Err(err) = state.storage.upsert_analysis(analyses).await {
+        error!(%normalized_email, ?err, "failed to persist analysis cache");
+    }
     info!(%normalized_email, email_count = emails.len(), "account connected successfully");
     Ok(ConnectAccountResponse { account, emails })
 }
@@ -89,9 +129,319 @@ async fn fetch_recent(
             provider_error_to_message(err)
         })?;
 
+    let mut inserts = Vec::with_capacity(emails.len());
+    let mut analyses = Vec::with_capacity(emails.len());
+    for summary in &emails {
+        let (insert, analysis) = build_records(&normalized_email, summary, None, None, None);
+        inserts.push(insert);
+        analyses.push(analysis);
+    }
+
+    if let Err(err) = state.storage.upsert_messages(inserts).await {
+        error!(%normalized_email, ?err, "failed to cache mailbox during fetch_recent");
+    }
+
+    if let Err(err) = state.storage.upsert_analysis(analyses).await {
+        error!(%normalized_email, ?err, "failed to persist analysis during fetch_recent");
+    }
+
     debug!(%normalized_email, count = emails.len(), "fetch_recent returning emails");
 
     Ok(emails)
+}
+
+#[tauri::command]
+async fn sync_account_full(
+    state: State<'_, AppState>,
+    provider: Provider,
+    email: String,
+    chunk_size: Option<usize>,
+) -> Result<SyncReport, String> {
+    let normalized_email = email.trim().to_lowercase();
+    let chunk = chunk_size.unwrap_or(400);
+
+    let credentials = {
+        let accounts = state.accounts.read().await;
+        accounts
+            .get(&normalized_email)
+            .cloned()
+            .ok_or_else(|| "Account is not connected".to_string())?
+    };
+
+    if credentials.provider != provider {
+        warn!(%normalized_email, stored_provider = ?credentials.provider, requested_provider = ?provider, "provider mismatch for full sync");
+        return Err("Provider mismatch for stored credentials".into());
+    }
+
+    info!(%normalized_email, chunk, "starting full mailbox sync");
+    let started = Instant::now();
+
+    let envelopes = providers::fetch_all(&credentials, chunk)
+        .await
+        .map_err(|err| {
+            error!(%normalized_email, ?err, "full mailbox fetch failed");
+            provider_error_to_message(err)
+        })?;
+
+    let mut inserts = Vec::with_capacity(envelopes.len());
+    let mut analyses = Vec::with_capacity(envelopes.len());
+
+    for envelope in &envelopes {
+        let flags_slice = if envelope.flags.is_empty() {
+            None
+        } else {
+            Some(envelope.flags.as_slice())
+        };
+        let (insert, analysis) = build_records(
+            &normalized_email,
+            &envelope.summary,
+            envelope.snippet.clone(),
+            envelope.body.clone(),
+            flags_slice,
+        );
+        inserts.push(insert);
+        analyses.push(analysis);
+    }
+
+    if let Err(err) = state.storage.upsert_messages(inserts).await {
+        error!(%normalized_email, ?err, "failed to persist messages after full sync");
+    }
+
+    if let Err(err) = state.storage.upsert_analysis(analyses).await {
+        error!(%normalized_email, ?err, "failed to persist analyses after full sync");
+    }
+
+    let duration_ms = started.elapsed().as_millis() as u64;
+
+    Ok(SyncReport {
+        fetched: envelopes.len(),
+        stored: envelopes.len(),
+        duration_ms,
+    })
+}
+
+#[tauri::command]
+async fn list_sender_groups(
+    state: State<'_, AppState>,
+    email: String,
+) -> Result<Vec<SenderGroupResponse>, String> {
+    let normalized_email = email.trim().to_lowercase();
+    let groups = state
+        .storage
+        .grouped_messages_for_account(&normalized_email)
+        .await
+        .map_err(|err| err.to_string())?;
+
+    let mut response = Vec::with_capacity(groups.len());
+
+    for group in groups {
+        let messages = group
+            .messages
+            .into_iter()
+            .map(|message| MessageItem {
+                uid: message.uid,
+                subject: message.subject,
+                date: message.date,
+                snippet: message.snippet,
+                status: message.status.as_str().to_string(),
+                flags: message.flags,
+                analysis_summary: message.analysis_summary,
+                analysis_sentiment: message.analysis_sentiment,
+                analysis_categories: message.analysis_categories,
+            })
+            .collect::<Vec<_>>();
+
+        response.push(SenderGroupResponse {
+            sender_email: group.sender_email,
+            sender_display: group.sender_display,
+            status: group.status.as_str().to_string(),
+            message_count: messages.len(),
+            messages,
+        });
+    }
+
+    Ok(response)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+async fn set_sender_status(
+    state: State<'_, AppState>,
+    senderEmail: String,
+    status: String,
+) -> Result<(), String> {
+    let normalized_sender = senderEmail.trim().to_lowercase();
+    let desired_status = match status.as_str() {
+        "allowed" => SenderStatus::Allowed,
+        "blocked" => SenderStatus::Blocked,
+        _ => SenderStatus::Neutral,
+    };
+
+    state
+        .storage
+        .update_sender_status(&normalized_sender, desired_status)
+        .await
+        .map_err(|err| err.to_string())?
+        ;
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn delete_message_remote(
+    state: State<'_, AppState>,
+    provider: Provider,
+    email: String,
+    uid: String,
+) -> Result<(), String> {
+    let normalized_email = email.trim().to_lowercase();
+
+    let credentials = {
+        let accounts = state.accounts.read().await;
+        accounts
+            .get(&normalized_email)
+            .cloned()
+            .ok_or_else(|| "Account is not connected".to_string())?
+    };
+
+    if credentials.provider != provider {
+        return Err("Provider mismatch for stored credentials".into());
+    }
+
+    providers::delete_message(&credentials, &uid)
+        .await
+        .map_err(|err| {
+            error!(%normalized_email, %uid, ?err, "remote delete failed");
+            provider_error_to_message(err)
+        })?;
+
+    state
+        .storage
+        .delete_message(&normalized_email, &uid)
+        .await
+        .map_err(|err| err.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn configure_periodic_sync(
+    state: State<'_, AppState>,
+    provider: Provider,
+    email: String,
+    minutes: Option<u64>,
+) -> Result<(), String> {
+    let normalized_email = email.trim().to_lowercase();
+
+    {
+        let mut jobs = state.sync_jobs.write().await;
+        if let Some(existing) = jobs.remove(&normalized_email) {
+            existing.cancel.cancel();
+            existing.handle.abort();
+        }
+    }
+
+    let Some(interval_minutes) = minutes.filter(|value| *value > 0) else {
+        info!(%normalized_email, "periodic sync disabled");
+        return Ok(());
+    };
+
+    let credentials = {
+        let accounts = state.accounts.read().await;
+        accounts
+            .get(&normalized_email)
+            .cloned()
+            .ok_or_else(|| "Account is not connected".to_string())?
+    };
+
+    if credentials.provider != provider {
+        return Err("Provider mismatch for stored credentials".into());
+    }
+
+    let storage = state.storage.clone();
+    let cancel = CancellationToken::new();
+    let child_token = cancel.clone();
+    let email_clone = normalized_email.clone();
+    let credentials_clone = credentials.clone();
+
+    let handle = tokio::spawn(async move {
+        if let Err(err) = perform_incremental_sync(&storage, &credentials_clone, &email_clone, 200).await {
+            error!(%email_clone, ?err, "initial periodic sync failed");
+        }
+
+        let mut ticker = time::interval(Duration::from_secs(interval_minutes * 60));
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                _ = child_token.cancelled() => {
+                    info!(%email_clone, "periodic sync cancelled");
+                    break;
+                }
+                _ = ticker.tick() => {
+                    if let Err(err) = perform_incremental_sync(&storage, &credentials_clone, &email_clone, 200).await {
+                        error!(%email_clone, ?err, "periodic sync iteration failed");
+                    }
+                }
+            }
+        }
+    });
+
+    {
+        let mut jobs = state.sync_jobs.write().await;
+        jobs.insert(
+            normalized_email,
+            SyncHandle {
+                cancel,
+                handle,
+            },
+        );
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn apply_block_filter(
+    state: State<'_, AppState>,
+    provider: Provider,
+    email: String,
+    target_folder: Option<String>,
+) -> Result<usize, String> {
+    let normalized_email = email.trim().to_lowercase();
+    let folder = target_folder.unwrap_or_else(|| "Blocked".to_string());
+
+    let credentials = {
+        let accounts = state.accounts.read().await;
+        accounts
+            .get(&normalized_email)
+            .cloned()
+            .ok_or_else(|| "Account is not connected".to_string())?
+    };
+
+    if credentials.provider != provider {
+        return Err("Provider mismatch for stored credentials".into());
+    }
+
+    let statuses = state
+        .storage
+        .list_statuses()
+        .await
+        .map_err(|err| err.to_string())?;
+
+    let blocked: Vec<String> = statuses
+        .into_iter()
+        .filter(|(_, status)| matches!(status, SenderStatus::Blocked))
+        .map(|(sender, _)| sender)
+        .collect();
+
+    if blocked.is_empty() {
+        return Ok(0);
+    }
+
+    providers::move_blocked_to_folder(&credentials, &blocked, &folder)
+        .await
+        .map_err(|err| provider_error_to_message(err))
 }
 
 #[tauri::command]
@@ -197,14 +547,169 @@ fn provider_error_to_message(error: ProviderError) -> String {
     }
 }
 
+async fn perform_incremental_sync(
+    storage: &Storage,
+    credentials: &Credentials,
+    account_email: &str,
+    limit: usize,
+) -> Result<(), ProviderError> {
+    let summaries = providers::fetch_recent(credentials, limit).await?;
+
+    if summaries.is_empty() {
+        return Ok(());
+    }
+
+    let mut inserts = Vec::with_capacity(summaries.len());
+    let mut analyses = Vec::with_capacity(summaries.len());
+
+    for summary in &summaries {
+        let (insert, analysis) = build_records(account_email, summary, None, None, None);
+        inserts.push(insert);
+        analyses.push(analysis);
+    }
+
+    if let Err(err) = storage.upsert_messages(inserts).await {
+        error!(account = %account_email, ?err, "failed to persist messages during periodic sync");
+    }
+
+    if let Err(err) = storage.upsert_analysis(analyses).await {
+        error!(account = %account_email, ?err, "failed to persist analysis during periodic sync");
+    }
+
+    Ok(())
+}
+
+fn build_records(
+    account_email: &str,
+    summary: &EmailSummary,
+    snippet: Option<String>,
+    body: Option<Vec<u8>>,
+    flags: Option<&[String]>,
+) -> (MessageInsert, AnalysisInsert) {
+    let flags_string = flags.and_then(|values| {
+        if values.is_empty() {
+            None
+        } else {
+            Some(values.join(" "))
+        }
+    });
+
+    let display_name = summary
+        .sender
+        .display_name
+        .clone()
+        .unwrap_or_else(|| summary.sender.email.clone());
+
+    let snippet_clone = snippet.clone();
+    let (analysis_summary, analysis_sentiment, categories) =
+        analyze_message(&summary.subject, snippet_clone.as_deref());
+
+    let insert = MessageInsert {
+        account_email: account_email.to_string(),
+        uid: summary.uid.clone(),
+        sender_display: display_name,
+        sender_email: summary.sender.email.clone(),
+        subject: summary.subject.clone(),
+        date: summary.date.clone(),
+        snippet,
+        body,
+        flags: flags_string,
+    };
+
+    let analysis = AnalysisInsert {
+        account_email: account_email.to_string(),
+        uid: summary.uid.clone(),
+        summary: analysis_summary,
+        sentiment: analysis_sentiment,
+        categories,
+    };
+
+    (insert, analysis)
+}
+
+fn analyze_message(subject: &str, snippet: Option<&str>) -> (Option<String>, Option<String>, Vec<String>) {
+    const POSITIVE_WORDS: &[&str] = &["thanks", "thank you", "appreciate", "great", "success", "approved"];
+    const NEGATIVE_WORDS: &[&str] = &["issue", "urgent", "problem", "failed", "declined", "error"];
+
+    let snippet_text = snippet.unwrap_or("");
+    let combined = format!("{} {}", subject, snippet_text).to_lowercase();
+
+    let base_text = if snippet_text.trim().is_empty() {
+        subject.trim()
+    } else {
+        snippet_text.trim()
+    };
+
+    let summary = if base_text.is_empty() {
+        None
+    } else {
+        let mut truncated = base_text.chars().take(200).collect::<String>();
+        if base_text.len() > truncated.len() {
+            truncated.push('…');
+        }
+        Some(truncated)
+    };
+
+    let mut score = 0i32;
+    for word in POSITIVE_WORDS {
+        if combined.contains(word) {
+            score += 1;
+        }
+    }
+    for word in NEGATIVE_WORDS {
+        if combined.contains(word) {
+            score -= 1;
+        }
+    }
+
+    let sentiment = if score > 1 {
+        Some("positive".to_string())
+    } else if score < -1 {
+        Some("negative".to_string())
+    } else if combined.trim().is_empty() {
+        None
+    } else {
+        Some("neutral".to_string())
+    };
+
+    let mut categories = Vec::new();
+    if combined.contains("invoice") || combined.contains("receipt") || combined.contains("payment") {
+        categories.push("billing".to_string());
+    }
+    if combined.contains("alert") || combined.contains("warning") || combined.contains("security") {
+        categories.push("alert".to_string());
+    }
+    if combined.contains("newsletter") || combined.contains("subscribe") || combined.contains("update") {
+        categories.push("newsletter".to_string());
+    }
+    if combined.contains("meeting") || combined.contains("schedule") || combined.contains("calendar") {
+        categories.push("calendar".to_string());
+    }
+    categories.sort();
+    categories.dedup();
+
+    (summary, sentiment, categories)
+}
+
 fn main() {
     init_tracing();
 
     tauri::Builder::default()
-        .manage(AppState::default())
+        .setup(|app| {
+            let storage = Storage::initialize(&app.app_handle())
+                .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+            app.manage(AppState::new(storage));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             connect_account,
             fetch_recent,
+            sync_account_full,
+            list_sender_groups,
+            set_sender_status,
+            delete_message_remote,
+            configure_periodic_sync,
+            apply_block_filter,
             disconnect_account,
             oauth
         ])

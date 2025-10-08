@@ -4,12 +4,12 @@ export default defineConfig(function () { return ({
     plugins: [react()],
     clearScreen: false,
     server: {
-        port: 1420,
-        strictPort: true
+        port: 5173,
+        strictPort: false
     },
     preview: {
-        port: 1420,
-        strictPort: true
+        port: 5173,
+        strictPort: false
     },
     build: {
         outDir: "dist",

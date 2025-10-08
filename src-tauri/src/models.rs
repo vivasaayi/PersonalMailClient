@@ -2,6 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{self, Display};
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+
+use crate::storage::Storage;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
@@ -46,8 +50,14 @@ pub struct Account {
 pub struct EmailSummary {
     pub uid: String,
     pub subject: String,
-    pub from: String,
+    pub sender: MailAddress,
     pub date: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MailAddress {
+    pub display_name: Option<String>,
+    pub email: String,
 }
 
 #[derive(Debug, Clone)]
@@ -79,13 +89,37 @@ impl Credentials {
     }
 }
 
-#[derive(Default)]
 pub struct AppState {
     pub accounts: RwLock<HashMap<String, Credentials>>,
+    pub storage: Storage,
+    pub sync_jobs: RwLock<HashMap<String, SyncHandle>>,
+}
+
+impl AppState {
+    pub fn new(storage: Storage) -> Self {
+        Self {
+            accounts: RwLock::new(HashMap::new()),
+            storage,
+            sync_jobs: RwLock::new(HashMap::new()),
+        }
+    }
+}
+
+pub struct SyncHandle {
+    pub cancel: CancellationToken,
+    pub handle: JoinHandle<()>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ConnectAccountResponse {
     pub account: Account,
     pub emails: Vec<EmailSummary>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SyncReport {
+    pub fetched: usize,
+    pub stored: usize,
+    #[serde(rename = "duration_ms")]
+    pub duration_ms: u64,
 }
