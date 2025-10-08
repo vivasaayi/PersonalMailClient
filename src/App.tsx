@@ -9,28 +9,22 @@ import type {
   Provider
 } from "./types";
 
-interface AccountFormState {
-  provider: Provider;
-  email: string;
-  password: string;
-}
-
-const initialFormState: AccountFormState = {
-  provider: "gmail",
-  email: "",
-  password: ""
-};
-
 const providerLabels: Record<Provider, string> = {
   gmail: "Gmail",
   outlook: "Outlook / Live",
   yahoo: "Yahoo Mail"
 };
 
-const providerHints: Record<Provider, string> = {
-  gmail: "Requires an App Password (Google Account → Security → App passwords)",
-  outlook: "Use an App Password or your tenant-specific password.",
-  yahoo: "Generate an App Password from Account Security → Manage App Passwords."
+const ACCOUNT_PROVIDER: Provider = "yahoo";
+
+interface AccountFormState {
+  email: string;
+  password: string;
+}
+
+const initialFormState: AccountFormState = {
+  email: "",
+  password: ""
 };
 
 export default function App() {
@@ -42,8 +36,6 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [removingAccount, setRemovingAccount] = useState<string | null>(null);
-
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
 
   const currentEmails = useMemo(() => {
     if (!selectedAccount) {
@@ -61,8 +53,8 @@ export default function App() {
     setInfo(null);
     setIsSubmitting(true);
     try {
-      const payload: ConnectAccountResponse = await invoke("connect_account", {
-        provider: formState.provider,
+      const payload = await invoke<ConnectAccountResponse>("connect_account", {
+        provider: ACCOUNT_PROVIDER,
         email: formState.email,
         password: formState.password
       });
@@ -83,8 +75,8 @@ export default function App() {
       }));
 
       setSelectedAccount(payload.account.email);
-      setInfo(`Connected to ${providerLabels[payload.account.provider]} as ${payload.account.email}`);
-      setFormState((prev: AccountFormState) => ({ ...prev, password: "" }));
+      setInfo(`Connected to Yahoo as ${payload.account.email}`);
+      setFormState(initialFormState);
     } catch (err) {
       console.error(err);
       setError(err instanceof Error ? err.message : String(err));
@@ -104,7 +96,7 @@ export default function App() {
     setInfo("Refreshing mailbox...");
     setError(null);
     try {
-      const recentEmails: EmailSummary[] = await invoke("fetch_recent", {
+      const recentEmails = await invoke<EmailSummary[]>("fetch_recent", {
         provider: account.provider,
         email: account.email,
         limit: 25
@@ -134,8 +126,9 @@ export default function App() {
         return next;
       });
       setEmailsByAccount((prev: Record<string, EmailSummary[]>) => {
-        const { [email]: _removed, ...rest } = prev;
-        return rest;
+        const next = { ...prev };
+        delete next[email];
+        return next;
       });
 
       setInfo(`Disconnected ${email}.`);
@@ -150,59 +143,43 @@ export default function App() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <h1>Personal Mail Client</h1>
-        <p className="subtitle">Securely aggregate Gmail, Outlook, and Yahoo inboxes.</p>
+        <h1>Yahoo Mail Client</h1>
+        <p className="subtitle">Connect using Yahoo app passwords over TLS.</p>
 
         <section className="card">
-          <h2>Add account</h2>
-          <label className="field">
-            <span>Provider</span>
-            <select
-              value={formState.provider}
-              onChange={(event: ChangeEvent<HTMLSelectElement>) =>
-                handleInputChange("provider", event.target.value as Provider)
-              }
-            >
-              {Object.entries(providerLabels).map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
-            <small>{providerHints[formState.provider]}</small>
-          </label>
-
+          <h2>Add Yahoo account</h2>
           <label className="field">
             <span>Email address</span>
             <input
               type="email"
               autoComplete="username"
-              placeholder="user@example.com"
+              placeholder="your.email@yahoo.com"
               value={formState.email}
               onChange={(event: ChangeEvent<HTMLInputElement>) =>
                 handleInputChange("email", event.target.value)
               }
             />
           </label>
-
           <label className="field">
             <span>App password</span>
             <input
               type="password"
               autoComplete="current-password"
-              placeholder="Application-specific password"
+              placeholder="16-character Yahoo app password"
               value={formState.password}
               onChange={(event: ChangeEvent<HTMLInputElement>) =>
                 handleInputChange("password", event.target.value)
               }
             />
+            <small className="hint">
+              Generate via Yahoo Account Security → Manage app passwords → Mail
+            </small>
           </label>
-
           <button
             type="button"
             className="primary"
-            disabled={isSubmitting || !formState.email || !formState.password}
             onClick={submitConnect}
+            disabled={isSubmitting || !formState.email || !formState.password}
           >
             {isSubmitting ? "Connecting..." : "Connect"}
           </button>
@@ -278,7 +255,7 @@ export default function App() {
         ) : (
           <div className="placeholder">
             <h2>Welcome!</h2>
-            <p>Select or connect an account to begin syncing your inbox.</p>
+            <p>Connect a Yahoo account using an app password to begin syncing.</p>
           </div>
         )}
       </main>
