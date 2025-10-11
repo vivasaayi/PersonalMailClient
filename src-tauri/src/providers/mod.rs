@@ -2,6 +2,8 @@ use crate::models::{Credentials, EmailSummary};
 use ::imap::Error as ImapError;
 use native_tls::Error as TlsError;
 use thiserror::Error;
+use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::task::JoinHandle;
 
 pub mod imap;
 
@@ -40,7 +42,9 @@ pub async fn fetch_recent(
     limit: usize,
 ) -> Result<Vec<EmailSummary>, ProviderError> {
     if limit == 0 {
-        return Err(ProviderError::Other("limit must be greater than zero".into()));
+        return Err(ProviderError::Other(
+            "limit must be greater than zero".into(),
+        ));
     }
 
     imap::fetch_recent(credentials, limit).await
@@ -54,10 +58,19 @@ pub struct MessageEnvelope {
     pub flags: Vec<String>,
 }
 
+#[derive(Debug)]
+pub struct BatchResult {
+    pub index: usize,
+    pub total: usize,
+    pub requested: usize,
+    pub fetched: usize,
+    pub messages: Vec<MessageEnvelope>,
+}
+
 pub async fn fetch_all(
     credentials: &Credentials,
     chunk_size: usize,
-) -> Result<Vec<MessageEnvelope>, ProviderError> {
+) -> Result<(UnboundedReceiver<BatchResult>, JoinHandle<Result<(), ProviderError>>), ProviderError> {
     imap::fetch_all(credentials, chunk_size).await
 }
 

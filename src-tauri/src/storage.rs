@@ -1,7 +1,9 @@
-use std::{fs, path::{Path, PathBuf}, sync::Arc};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use aes_gcm::{
     aead::{generic_array::typenum::Unsigned, Aead, AeadCore, KeyInit, OsRng},
     Aes256Gcm, Nonce,
@@ -11,9 +13,11 @@ use chrono::Utc;
 use once_cell::sync::OnceCell;
 use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
-use serde_json;
 use secrecy::{ExposeSecret, SecretVec};
+use serde_json;
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use tauri::AppHandle;
 type Result<T> = std::result::Result<T, StorageError>;
 
@@ -23,7 +27,7 @@ pub enum StorageError {
     Database(#[from] rusqlite::Error),
     #[error("key error: {0}")]
     Key(String),
-    #[error("encryption error")] 
+    #[error("encryption error")]
     Encryption,
     #[error("decryption error")]
     Decryption,
@@ -104,6 +108,15 @@ pub struct SenderGroup {
     pub messages: Vec<MessageRow>,
 }
 
+#[derive(Debug, Clone)]
+pub struct CachedMessageSummary {
+    pub uid: String,
+    pub subject: String,
+    pub sender_email: String,
+    pub sender_display: Option<String>,
+    pub date: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct Storage {
     conn: Arc<parking_lot::Mutex<Connection>>,
@@ -147,14 +160,13 @@ fn map_join_error(err: tokio::task::JoinError) -> StorageError {
 
 impl Storage {
     pub fn initialize(handle: &AppHandle) -> Result<Self> {
-        let data_dir = handle
-            .path_resolver()
-            .app_data_dir()
-            .ok_or_else(|| StorageError::Io(std::io::Error::new(
+        let data_dir = handle.path_resolver().app_data_dir().ok_or_else(|| {
+            StorageError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "App data directory not available",
-            )))?;
-    fs::create_dir_all(&data_dir)?;
+            ))
+        })?;
+        fs::create_dir_all(&data_dir)?;
         let db_path = data_dir.join("mail_cache.db");
         DB_PATH.set(db_path.clone()).ok();
 
@@ -163,8 +175,8 @@ impl Storage {
         connection.pragma_update(None, "synchronous", "NORMAL")?;
         Self::apply_migrations(&mut connection)?;
 
-    let master_key = load_or_create_master_key(&data_dir)?;
-    let cipher = Cipher::from_bytes(master_key)?;
+        let master_key = load_or_create_master_key(&data_dir)?;
+        let cipher = Cipher::from_bytes(master_key)?;
 
         Ok(Self {
             conn: Arc::new(parking_lot::Mutex::new(connection)),
@@ -333,9 +345,7 @@ impl Storage {
                     });
                 }
 
-                let group = groups
-                    .last_mut()
-                    .expect("group should exist after push");
+                let group = groups.last_mut().expect("group should exist after push");
 
                 let subject_enc: String = row.get(4)?;
                 let subject = cipher.decrypt_string(&subject_enc)?;
@@ -348,8 +358,10 @@ impl Storage {
                 let categories_json: Option<String> = row.get(11)?;
                 let analysis_categories = categories_json
                     .as_ref()
-                    .map(|value| serde_json::from_str::<Vec<String>>(value)
-                        .map_err(|err| StorageError::Serialization(err.to_string())))
+                    .map(|value| {
+                        serde_json::from_str::<Vec<String>>(value)
+                            .map_err(|err| StorageError::Serialization(err.to_string()))
+                    })
                     .transpose()?
                     .unwrap_or_default();
 
@@ -372,6 +384,61 @@ impl Storage {
             }
 
             Ok(groups)
+        })
+        .await
+        .map_err(map_join_error)?;
+
+        result
+    }
+
+    pub async fn recent_message_summaries(
+        &self,
+        account_email: &str,
+        limit: usize,
+    ) -> Result<Vec<CachedMessageSummary>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let conn = self.conn.clone();
+        let cipher = self.cipher.clone();
+        let account = account_email.to_owned();
+        let limit = limit.min(5_000);
+
+        let result = tokio::task::spawn_blocking(move || -> Result<Vec<CachedMessageSummary>> {
+            let conn = conn.lock();
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT uid, sender_email, sender_display, subject_encrypted, date
+                FROM messages
+                WHERE account_email = ?
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+                "#,
+            )?;
+
+            let mut rows = stmt.query(params![account, limit as i64])?;
+            let mut items = Vec::new();
+
+            while let Some(row) = rows.next()? {
+                let uid: String = row.get(0)?;
+                let sender_email: String = row.get(1)?;
+                let sender_display: Option<String> = row.get(2)?;
+                let subject_enc: String = row.get(3)?;
+                let date: Option<String> = row.get(4)?;
+
+                let subject = cipher.decrypt_string(&subject_enc)?;
+
+                items.push(CachedMessageSummary {
+                    uid,
+                    subject,
+                    sender_email,
+                    sender_display,
+                    date,
+                });
+            }
+
+            Ok(items)
         })
         .await
         .map_err(map_join_error)?;
@@ -436,8 +503,11 @@ impl Storage {
         let email = sender_email.to_lowercase();
         let result = tokio::task::spawn_blocking(move || -> Result<SenderStatus> {
             let conn = conn.lock();
-            let mut stmt = conn.prepare("SELECT status FROM sender_status WHERE sender_email = ?")?;
-            let status: Option<String> = stmt.query_row(params![email], |row| row.get(0)).optional()?;
+            let mut stmt =
+                conn.prepare("SELECT status FROM sender_status WHERE sender_email = ?")?;
+            let status: Option<String> = stmt
+                .query_row(params![email], |row| row.get(0))
+                .optional()?;
             Ok(status
                 .map(|value| SenderStatus::from_str(&value))
                 .unwrap_or(SenderStatus::Neutral))
@@ -509,7 +579,13 @@ impl Storage {
                     let sentiment = row.sentiment.as_deref();
                     let categories = categories_json.as_deref();
 
-                    stmt.execute(params![summary, sentiment, categories, row.account_email, row.uid])?;
+                    stmt.execute(params![
+                        summary,
+                        sentiment,
+                        categories,
+                        row.account_email,
+                        row.uid
+                    ])?;
                 }
             }
             tx.commit()?;
@@ -557,7 +633,7 @@ impl Cipher {
         let combined = general_purpose::STANDARD
             .decode(data)
             .map_err(|_| StorageError::Decryption)?;
-    let nonce_len = <Aes256Gcm as AeadCore>::NonceSize::to_usize();
+        let nonce_len = <Aes256Gcm as AeadCore>::NonceSize::to_usize();
         if combined.len() < nonce_len {
             return Err(StorageError::Decryption);
         }

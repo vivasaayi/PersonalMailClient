@@ -1,19 +1,27 @@
-#![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
+#![cfg_attr(
+    all(not(debug_assertions), target_os = "windows"),
+    windows_subsystem = "windows"
+)]
 
-use personal_mail_client::models::{AppState, ConnectAccountResponse, Credentials, EmailSummary, Provider, SyncHandle, SyncReport};
+use oauth2::{
+    AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge, RedirectUrl, Scope, TokenResponse,
+};
+use personal_mail_client::models::{
+    AppState, ConnectAccountResponse, Credentials, EmailSummary, MailAddress, Provider, SyncHandle,
+    SyncReport,
+};
 use personal_mail_client::providers::{self, ProviderError};
 use personal_mail_client::storage::{AnalysisInsert, MessageInsert, SenderStatus, Storage};
 use serde::Serialize;
-use tauri::{Manager, State};
-use tracing::{debug, error, info, Level, warn};
-use tokio::time::{self, Duration, MissedTickBehavior};
-use tokio_util::sync::CancellationToken;
-use std::time::Instant;
-use warp::Filter;
-use oauth2::{AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge, RedirectUrl, Scope, TokenResponse};
 use std::collections::HashMap;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
+use tauri::{Manager, State};
+use tokio::time::{self, Duration, MissedTickBehavior};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn, Level};
+use warp::Filter;
 
 fn init_tracing() {
     let _ = tracing_subscriber::fmt()
@@ -45,6 +53,16 @@ struct SenderGroupResponse {
     status: String,
     message_count: usize,
     messages: Vec<MessageItem>,
+}
+
+#[derive(Serialize)]
+struct SyncProgressPayload {
+    email: String,
+    batch: usize,
+    total_batches: usize,
+    fetched: usize,
+    stored: usize,
+    elapsed_ms: u64,
 }
 
 #[tauri::command]
@@ -152,13 +170,14 @@ async fn fetch_recent(
 
 #[tauri::command]
 async fn sync_account_full(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     provider: Provider,
     email: String,
     chunk_size: Option<usize>,
 ) -> Result<SyncReport, String> {
     let normalized_email = email.trim().to_lowercase();
-    let chunk = chunk_size.unwrap_or(400);
+    let chunk = chunk_size.unwrap_or(50);
 
     let credentials = {
         let accounts = state.accounts.read().await;
@@ -176,46 +195,82 @@ async fn sync_account_full(
     info!(%normalized_email, chunk, "starting full mailbox sync");
     let started = Instant::now();
 
-    let envelopes = providers::fetch_all(&credentials, chunk)
+    let (mut batch_rx, producer_handle) = providers::fetch_all(&credentials, chunk)
         .await
         .map_err(|err| {
             error!(%normalized_email, ?err, "full mailbox fetch failed");
             provider_error_to_message(err)
         })?;
 
-    let mut inserts = Vec::with_capacity(envelopes.len());
-    let mut analyses = Vec::with_capacity(envelopes.len());
+    let mut total_fetched = 0usize;
+    let mut total_stored = 0usize;
 
-    for envelope in &envelopes {
-        let flags_slice = if envelope.flags.is_empty() {
-            None
+    while let Some(batch_result) = batch_rx.recv().await {
+        if batch_result.messages.is_empty() {
+            continue;
+        }
+
+        let mut inserts = Vec::with_capacity(batch_result.messages.len());
+        let mut analyses = Vec::with_capacity(batch_result.messages.len());
+
+        for envelope in batch_result.messages {
+            let flags_slice = if envelope.flags.is_empty() {
+                None
+            } else {
+                Some(envelope.flags.as_slice())
+            };
+            let (insert, analysis) = build_records(
+                &normalized_email,
+                &envelope.summary,
+                envelope.snippet.clone(),
+                envelope.body.clone(),
+                flags_slice,
+            );
+            inserts.push(insert);
+            analyses.push(analysis);
+        }
+
+        total_fetched += inserts.len();
+
+        if let Err(err) = state.storage.upsert_messages(inserts).await {
+            error!(%normalized_email, ?err, "failed to persist messages after full sync batch");
         } else {
-            Some(envelope.flags.as_slice())
+            total_stored = total_fetched;
+        }
+
+        if let Err(err) = state.storage.upsert_analysis(analyses).await {
+            error!(%normalized_email, ?err, "failed to persist analyses after full sync batch");
+        }
+
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        let payload = SyncProgressPayload {
+            email: normalized_email.clone(),
+            batch: batch_result.index,
+            total_batches: batch_result.total,
+            fetched: total_fetched,
+            stored: total_stored,
+            elapsed_ms,
         };
-        let (insert, analysis) = build_records(
-            &normalized_email,
-            &envelope.summary,
-            envelope.snippet.clone(),
-            envelope.body.clone(),
-            flags_slice,
-        );
-        inserts.push(insert);
-        analyses.push(analysis);
+
+        if let Err(err) = app.emit_to("main", "full-sync-progress", &payload) {
+            warn!(%normalized_email, ?err, "failed to emit full-sync-progress event");
+        }
     }
 
-    if let Err(err) = state.storage.upsert_messages(inserts).await {
-        error!(%normalized_email, ?err, "failed to persist messages after full sync");
-    }
-
-    if let Err(err) = state.storage.upsert_analysis(analyses).await {
-        error!(%normalized_email, ?err, "failed to persist analyses after full sync");
-    }
+    producer_handle
+        .await
+        .map_err(|err| ProviderError::Other(format!("Background task failure: {err}")))
+        .and_then(|result| result)
+        .map_err(|err| {
+            error!(%normalized_email, ?err, "full mailbox fetch failed");
+            provider_error_to_message(err)
+        })?;
 
     let duration_ms = started.elapsed().as_millis() as u64;
 
     Ok(SyncReport {
-        fetched: envelopes.len(),
-        stored: envelopes.len(),
+        fetched: total_fetched,
+        stored: total_stored,
         duration_ms,
     })
 }
@@ -281,10 +336,40 @@ async fn set_sender_status(
         .storage
         .update_sender_status(&normalized_sender, desired_status)
         .await
-        .map_err(|err| err.to_string())?
-        ;
+        .map_err(|err| err.to_string())?;
 
     Ok(())
+}
+
+#[tauri::command]
+async fn list_recent_messages(
+    state: State<'_, AppState>,
+    email: String,
+    limit: Option<usize>,
+) -> Result<Vec<EmailSummary>, String> {
+    let normalized_email = email.trim().to_lowercase();
+    let limit = limit.unwrap_or(200).clamp(1, 5_000);
+
+    let cached = state
+        .storage
+        .recent_message_summaries(&normalized_email, limit)
+        .await
+        .map_err(|err| err.to_string())?;
+
+    let messages = cached
+        .into_iter()
+        .map(|summary| EmailSummary {
+            uid: summary.uid,
+            subject: summary.subject,
+            sender: MailAddress {
+                display_name: summary.sender_display,
+                email: summary.sender_email,
+            },
+            date: summary.date,
+        })
+        .collect();
+
+    Ok(messages)
 }
 
 #[tauri::command]
@@ -365,7 +450,9 @@ async fn configure_periodic_sync(
     let credentials_clone = credentials.clone();
 
     let handle = tokio::spawn(async move {
-        if let Err(err) = perform_incremental_sync(&storage, &credentials_clone, &email_clone, 200).await {
+        if let Err(err) =
+            perform_incremental_sync(&storage, &credentials_clone, &email_clone, 200).await
+        {
             error!(%email_clone, ?err, "initial periodic sync failed");
         }
 
@@ -389,13 +476,7 @@ async fn configure_periodic_sync(
 
     {
         let mut jobs = state.sync_jobs.write().await;
-        jobs.insert(
-            normalized_email,
-            SyncHandle {
-                cancel,
-                handle,
-            },
-        );
+        jobs.insert(normalized_email, SyncHandle { cancel, handle });
     }
 
     Ok(())
@@ -483,7 +564,9 @@ async fn oauth(client_id: String, provider: String) -> Result<String, String> {
         oauth2::AuthUrl::new(auth_url.to_string()).map_err(|e| e.to_string())?,
         Some(oauth2::TokenUrl::new(token_url.to_string()).map_err(|e| e.to_string())?),
     )
-    .set_redirect_uri(RedirectUrl::new("http://localhost:8080".to_string()).map_err(|e| e.to_string())?);
+    .set_redirect_uri(
+        RedirectUrl::new("http://localhost:8080".to_string()).map_err(|e| e.to_string())?,
+    );
 
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
 
@@ -494,7 +577,10 @@ async fn oauth(client_id: String, provider: String) -> Result<String, String> {
         .url();
 
     // Open the URL
-    Command::new("open").arg(&auth_url_final.to_string()).spawn().map_err(|e| format!("Failed to open browser: {}", e))?;
+    Command::new("open")
+        .arg(&auth_url_final.to_string())
+        .spawn()
+        .map_err(|e| format!("Failed to open browser: {}", e))?;
 
     // Start server
     let code_shared = Arc::new(Mutex::new(None::<String>));
@@ -507,7 +593,9 @@ async fn oauth(client_id: String, provider: String) -> Result<String, String> {
             async move {
                 if let Some(c) = query.get("code") {
                     *code.lock().unwrap() = Some(c.clone());
-                    Ok::<_, warp::Rejection>(warp::reply::html("Authorization successful! You can close this window."))
+                    Ok::<_, warp::Rejection>(warp::reply::html(
+                        "Authorization successful! You can close this window.",
+                    ))
                 } else {
                     Ok::<_, warp::Rejection>(warp::reply::html("Authorization failed."))
                 }
@@ -627,8 +715,18 @@ fn build_records(
     (insert, analysis)
 }
 
-fn analyze_message(subject: &str, snippet: Option<&str>) -> (Option<String>, Option<String>, Vec<String>) {
-    const POSITIVE_WORDS: &[&str] = &["thanks", "thank you", "appreciate", "great", "success", "approved"];
+fn analyze_message(
+    subject: &str,
+    snippet: Option<&str>,
+) -> (Option<String>, Option<String>, Vec<String>) {
+    const POSITIVE_WORDS: &[&str] = &[
+        "thanks",
+        "thank you",
+        "appreciate",
+        "great",
+        "success",
+        "approved",
+    ];
     const NEGATIVE_WORDS: &[&str] = &["issue", "urgent", "problem", "failed", "declined", "error"];
 
     let snippet_text = snippet.unwrap_or("");
@@ -673,16 +771,23 @@ fn analyze_message(subject: &str, snippet: Option<&str>) -> (Option<String>, Opt
     };
 
     let mut categories = Vec::new();
-    if combined.contains("invoice") || combined.contains("receipt") || combined.contains("payment") {
+    if combined.contains("invoice") || combined.contains("receipt") || combined.contains("payment")
+    {
         categories.push("billing".to_string());
     }
     if combined.contains("alert") || combined.contains("warning") || combined.contains("security") {
         categories.push("alert".to_string());
     }
-    if combined.contains("newsletter") || combined.contains("subscribe") || combined.contains("update") {
+    if combined.contains("newsletter")
+        || combined.contains("subscribe")
+        || combined.contains("update")
+    {
         categories.push("newsletter".to_string());
     }
-    if combined.contains("meeting") || combined.contains("schedule") || combined.contains("calendar") {
+    if combined.contains("meeting")
+        || combined.contains("schedule")
+        || combined.contains("calendar")
+    {
         categories.push("calendar".to_string());
     }
     categories.sort();
@@ -707,6 +812,7 @@ fn main() {
             sync_account_full,
             list_sender_groups,
             set_sender_status,
+            list_recent_messages,
             delete_message_remote,
             configure_periodic_sync,
             apply_block_filter,

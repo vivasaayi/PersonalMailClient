@@ -1,9 +1,12 @@
 use crate::models::{Credentials, EmailSummary, MailAddress};
-use crate::providers::{MessageEnvelope, ProviderError};
+use crate::providers::{BatchResult, MessageEnvelope, ProviderError};
 use ::imap::types::{Fetch, Flag};
 use ::imap_proto::types::Address;
 use native_tls::TlsConnector;
-use tokio::task;
+use std::time::Instant;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::task::{self, JoinHandle};
+use tracing::info;
 
 pub async fn fetch_recent(
     credentials: &Credentials,
@@ -20,13 +23,14 @@ pub async fn fetch_recent(
 pub async fn fetch_all(
     credentials: &Credentials,
     chunk_size: usize,
-) -> Result<Vec<MessageEnvelope>, ProviderError> {
+) -> Result<(UnboundedReceiver<BatchResult>, JoinHandle<Result<(), ProviderError>>), ProviderError> {
     let credentials = credentials.clone();
     let chunk = chunk_size.clamp(50, 1000);
+    let (tx, rx) = unbounded_channel();
 
-    task::spawn_blocking(move || fetch_all_blocking(credentials, chunk))
-        .await
-        .map_err(|err| ProviderError::Other(format!("Background task failure: {err}")))?
+    let handle = task::spawn_blocking(move || fetch_all_blocking(credentials, chunk, tx));
+
+    Ok((rx, handle))
 }
 
 pub async fn delete_message(credentials: &Credentials, uid: &str) -> Result<(), ProviderError> {
@@ -104,7 +108,8 @@ fn fetch_recent_blocking(
 fn fetch_all_blocking(
     credentials: Credentials,
     chunk_size: usize,
-) -> Result<Vec<MessageEnvelope>, ProviderError> {
+    tx: UnboundedSender<BatchResult>,
+) -> Result<(), ProviderError> {
     let domain = credentials.provider.imap_host();
     let tls = TlsConnector::builder()
         .build()
@@ -124,29 +129,33 @@ fn fetch_all_blocking(
     let uids = session.uid_search("ALL")?;
     if uids.is_empty() {
         session.logout()?;
-        return Ok(Vec::new());
+    return Ok(());
     }
 
     let mut sorted = uids.into_iter().collect::<Vec<_>>();
     sorted.sort_unstable();
 
-    let mut envelopes: Vec<MessageEnvelope> = Vec::with_capacity(sorted.len());
-
-    for chunk in sorted.chunks(chunk_size) {
+    let total_batches = (sorted.len() + chunk_size - 1) / chunk_size;
+    for (batch_index, chunk) in sorted.chunks(chunk_size).enumerate() {
+        let batch_start = Instant::now();
         let query = chunk
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(",");
 
-        let fetches = session.uid_fetch(&query, "(ENVELOPE INTERNALDATE BODY.PEEK[TEXT]<0.4096> FLAGS)")?;
+        let fetches = session.uid_fetch(
+            &query,
+            "(ENVELOPE INTERNALDATE BODY.PEEK[TEXT]<0.4096> FLAGS)",
+        )?;
 
+        let mut batch_envelopes: Vec<MessageEnvelope> = Vec::with_capacity(fetches.len());
         for item in fetches.iter() {
             if let Some(summary) = summarize_fetch(item) {
                 let snippet = extract_body_snippet(item);
                 let body = item.body().map(|bytes| bytes.to_vec());
                 let flags = extract_flags(item);
-                envelopes.push(MessageEnvelope {
+                batch_envelopes.push(MessageEnvelope {
                     summary,
                     snippet,
                     body,
@@ -154,10 +163,32 @@ fn fetch_all_blocking(
                 });
             }
         }
+
+        let batch_duration = batch_start.elapsed().as_millis() as u64;
+        let processed = batch_envelopes.len();
+        let result = BatchResult {
+            index: batch_index + 1,
+            total: total_batches,
+            requested: chunk.len(),
+            fetched: processed,
+            messages: batch_envelopes,
+        };
+        tx.send(result)
+            .map_err(|_| ProviderError::Other("progress channel closed".into()))?;
+        info!(
+            account = %credentials.email,
+            batch = batch_index + 1,
+            total_batches,
+            requested_uids = chunk.len(),
+            fetched_items = fetches.len(),
+            processed_messages = processed,
+            batch_duration_ms = batch_duration,
+            "full sync batch completed"
+        );
     }
 
     session.logout()?;
-    Ok(envelopes)
+    Ok(())
 }
 
 fn delete_message_blocking(credentials: Credentials, uid: String) -> Result<(), ProviderError> {
@@ -238,19 +269,16 @@ fn summarize_fetch(fetch: &Fetch) -> Option<EmailSummary> {
     let uid = fetch.uid?;
     let subject = decode_bytes(envelope.subject.as_ref().map(|cow| cow.as_ref()));
     let sender = primary_address(envelope.from.as_ref().map(|addresses| addresses.as_slice()));
-    let date = fetch
-        .internal_date()
-        .map(|dt| dt.to_rfc2822())
-        .or_else(|| {
-            envelope.date.as_ref().and_then(|cow| {
-                let value = decode_bytes(Some(cow.as_ref()));
-                if value.is_empty() {
-                    None
-                } else {
-                    Some(value)
-                }
-            })
-        });
+    let date = fetch.internal_date().map(|dt| dt.to_rfc2822()).or_else(|| {
+        envelope.date.as_ref().and_then(|cow| {
+            let value = decode_bytes(Some(cow.as_ref()));
+            if value.is_empty() {
+                None
+            } else {
+                Some(value)
+            }
+        })
+    });
 
     Some(EmailSummary {
         uid: uid.to_string(),
@@ -298,21 +326,24 @@ fn decode_bytes(data: Option<&[u8]>) -> String {
 }
 
 fn extract_body_snippet(fetch: &Fetch) -> Option<String> {
-    fetch.body().map(|bytes| {
-        let raw = String::from_utf8_lossy(bytes);
-        let collapsed = raw
-            .replace(['\r', '\n'], " ")
-            .split_whitespace()
-            .take(80)
-            .collect::<Vec<_>>()
-            .join(" ");
-        let trimmed = collapsed.trim();
-        if trimmed.len() > 280 {
-            format!("{}…", &trimmed[..280])
-        } else {
-            trimmed.to_string()
-        }
-    }).filter(|snippet| !snippet.is_empty())
+    fetch
+        .body()
+        .map(|bytes| {
+            let raw = String::from_utf8_lossy(bytes);
+            let collapsed = raw
+                .replace(['\r', '\n'], " ")
+                .split_whitespace()
+                .take(80)
+                .collect::<Vec<_>>()
+                .join(" ");
+            let trimmed = collapsed.trim();
+            if trimmed.len() > 280 {
+                format!("{}…", &trimmed[..280])
+            } else {
+                trimmed.to_string()
+            }
+        })
+        .filter(|snippet| !snippet.is_empty())
 }
 
 fn extract_flags(fetch: &Fetch) -> Vec<String> {

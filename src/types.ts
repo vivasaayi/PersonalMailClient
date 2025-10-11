@@ -50,3 +50,12 @@ export interface SyncReport {
   stored: number;
   duration_ms: number;
 }
+
+export interface SyncProgress {
+  email: string;
+  batch: number;
+  total_batches: number;
+  fetched: number;
+  stored: number;
+  elapsed_ms: number;
+}

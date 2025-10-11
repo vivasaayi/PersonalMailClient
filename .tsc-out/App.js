@@ -1,6 +1,7 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
+import { appWindow } from "@tauri-apps/api/window";
 import clsx from "clsx";
 import dayjs from "dayjs";
 const providerLabels = {
@@ -47,6 +48,7 @@ export default function App() {
     const [statusUpdating, setStatusUpdating] = useState(null);
     const [pendingDeleteUid, setPendingDeleteUid] = useState(null);
     const [syncReports, setSyncReports] = useState({});
+    const [syncProgressByAccount, setSyncProgressByAccount] = useState({});
     const [periodicMinutesByAccount, setPeriodicMinutesByAccount] = useState({});
     const [isSavingPeriodic, setIsSavingPeriodic] = useState(false);
     const [isApplyingBlockFilter, setIsApplyingBlockFilter] = useState(false);
@@ -63,6 +65,65 @@ export default function App() {
         }
         return senderGroupsByAccount[selectedAccount] ?? [];
     }, [selectedAccount, senderGroupsByAccount]);
+    const loadCachedEmails = useCallback(async (accountEmail, limit = 1000) => {
+        try {
+            const cached = await invoke("list_recent_messages", {
+                email: accountEmail,
+                limit
+            });
+            setEmailsByAccount((prev) => ({
+                ...prev,
+                [accountEmail]: cached
+            }));
+        }
+        catch (err) {
+            console.error(err);
+            setError(err instanceof Error ? err.message : String(err));
+        }
+    }, []);
+    useEffect(() => {
+        let mounted = true;
+        let cleanup;
+        const register = async () => {
+            cleanup = await appWindow.listen("full-sync-progress", (event) => {
+                if (!mounted || !event.payload) {
+                    return;
+                }
+                const payload = event.payload;
+                setSyncProgressByAccount((prev) => ({
+                    ...prev,
+                    [payload.email]: payload
+                }));
+                if (selectedAccount === payload.email && payload.total_batches > 0) {
+                    const percent = Math.min(100, Math.round((payload.batch / payload.total_batches) * 100));
+                    setInfo(`Full sync in progress… ${percent}% (${payload.fetched.toLocaleString()} messages)`);
+                    loadCachedEmails(payload.email, 1000).catch((err) => {
+                        console.error("Failed to load cached emails during sync", err);
+                    });
+                }
+            });
+        };
+        register().catch((err) => {
+            console.error("Failed to register sync progress listener", err);
+        });
+        return () => {
+            mounted = false;
+            if (cleanup) {
+                cleanup();
+            }
+        };
+    }, [selectedAccount, loadCachedEmails]);
+    // Periodic polling for emails every 30 seconds
+    useEffect(() => {
+        if (!selectedAccount)
+            return;
+        const interval = setInterval(() => {
+            loadCachedEmails(selectedAccount, 1000).catch((err) => {
+                console.error("Failed to load cached emails during periodic poll", err);
+            });
+        }, 30000);
+        return () => clearInterval(interval);
+    }, [selectedAccount, loadCachedEmails]);
     const expandedSenderForAccount = selectedAccount
         ? expandedSenders[selectedAccount] ?? null
         : null;
@@ -70,6 +131,7 @@ export default function App() {
         ? periodicMinutesByAccount[selectedAccount] ?? 0
         : 0;
     const syncReport = selectedAccount ? syncReports[selectedAccount] ?? null : null;
+    const syncProgress = selectedAccount ? syncProgressByAccount[selectedAccount] ?? null : null;
     const handleInputChange = (key, value) => {
         setFormState((prev) => ({ ...prev, [key]: value }));
     };
@@ -120,13 +182,14 @@ export default function App() {
             if (showToast) {
                 setInfo("Mailbox updated.");
             }
+            await loadCachedEmails(account.email, Math.max(limit, 1000));
             await loadSenderGroups(account.email);
         }
         catch (err) {
             console.error(err);
             setError(err instanceof Error ? err.message : String(err));
         }
-    }, [accounts, loadSenderGroups]);
+    }, [accounts, loadCachedEmails, loadSenderGroups]);
     const submitConnect = async () => {
         setError(null);
         setInfo(null);
@@ -227,18 +290,29 @@ export default function App() {
         setError(null);
         setInfo("Running full mailbox sync...");
         setIsSyncing(true);
+        setSyncProgressByAccount((prev) => ({
+            ...prev,
+            [account.email]: {
+                email: account.email,
+                batch: 0,
+                total_batches: 0,
+                fetched: 0,
+                stored: 0,
+                elapsed_ms: 0
+            }
+        }));
         try {
             const report = await invoke("sync_account_full", {
                 provider: account.provider,
                 email: account.email,
-                chunk_size: 400
+                chunk_size: 50
             });
             setSyncReports((prev) => ({
                 ...prev,
                 [account.email]: report
             }));
             setInfo(`Fetched ${report.fetched} messages (${report.stored} stored) in ${(report.duration_ms / 1000).toFixed(1)}s.`);
-            await refreshEmailsForAccount(account.email, 50, false);
+            await loadCachedEmails(account.email, Math.max(report.stored, 1000));
             await loadSenderGroups(account.email);
         }
         catch (err) {
@@ -247,6 +321,10 @@ export default function App() {
         }
         finally {
             setIsSyncing(false);
+            setSyncProgressByAccount((prev) => ({
+                ...prev,
+                [account.email]: null
+            }));
         }
     };
     const handleSenderStatusChange = async (senderEmail, status) => {
@@ -454,7 +532,7 @@ export default function App() {
     return (_jsxs("div", { className: "app-shell", children: [_jsxs("aside", { className: "sidebar", children: [_jsx("h1", { children: "Yahoo Mail Client" }), _jsx("p", { className: "subtitle", children: "Connect using Yahoo app passwords over TLS." }), _jsxs("section", { className: "card", children: [_jsx("h2", { children: "Add Yahoo account" }), _jsxs("label", { className: "field", children: [_jsx("span", { children: "Email address" }), _jsx("input", { type: "email", autoComplete: "username", placeholder: "your.email@yahoo.com", value: formState.email, onChange: (event) => handleInputChange("email", event.target.value) })] }), _jsxs("label", { className: "field", children: [_jsx("span", { children: "App password" }), _jsx("input", { type: "password", autoComplete: "current-password", placeholder: "16-character Yahoo app password", value: formState.password, onChange: (event) => handleInputChange("password", event.target.value) }), _jsx("small", { className: "hint", children: "Generate via Yahoo Account Security \u2192 Manage app passwords \u2192 Mail" })] }), _jsx("button", { type: "button", className: "primary", onClick: submitConnect, disabled: isSubmitting || !formState.email || !formState.password, children: isSubmitting ? "Connecting..." : "Connect" })] }), _jsxs("section", { className: "card", children: [_jsx("h2", { children: "Connected accounts" }), accounts.length === 0 ? (_jsx("p", { className: "empty", children: "No accounts connected yet." })) : (_jsx("ul", { className: "account-list", children: accounts.map((account) => (_jsxs("li", { className: "account-row", children: [_jsxs("button", { type: "button", className: account.email === selectedAccount ? "link active" : "link", onClick: () => setSelectedAccount(account.email), children: [_jsx("span", { className: "provider", children: providerLabels[account.provider] }), _jsx("span", { children: account.email })] }), _jsx("button", { type: "button", className: "icon-button", onClick: (event) => {
                                                 event.stopPropagation();
                                                 disconnectAccount(account.email);
-                                            }, disabled: removingAccount === account.email, "aria-label": `Disconnect ${account.email}`, children: removingAccount === account.email ? "…" : "✕" })] }, account.email))) }))] })] }), _jsxs("main", { className: "content", children: [error && _jsx("div", { className: "alert error", children: error }), info && _jsx("div", { className: "alert info", children: info }), selectedAccount ? (_jsxs("div", { className: "mailbox", children: [_jsxs("header", { className: "mailbox-header", children: [_jsxs("div", { children: [_jsx("h2", { children: selectedAccount }), _jsxs("p", { className: "mailbox-subtitle", children: ["Connected via ", providerLabels[accounts.find((acct) => acct.email === selectedAccount)?.provider ?? ACCOUNT_PROVIDER]] })] }), _jsxs("div", { className: "mailbox-actions", children: [_jsx("button", { type: "button", className: "link", onClick: refreshEmails, children: "Refresh recent" }), _jsx("button", { type: "button", className: "link", onClick: handleFullSync, disabled: isSyncing, children: isSyncing ? "Syncing…" : "Full sync" })] })] }), _jsx("nav", { className: "tab-bar", "aria-label": "Mailbox views", children: tabs.map((tab) => (_jsxs("button", { type: "button", className: clsx("tab", { active: activeTab === tab.key }), onClick: () => setActiveTab(tab.key), children: [_jsx("span", { children: tab.label }), _jsx("small", { children: tab.description })] }, tab.key))) }), _jsxs("section", { className: "tab-panel", "aria-live": "polite", children: [activeTab === "recent" && (_jsx("div", { className: "tab-content", children: currentEmails.length === 0 ? (_jsx("p", { className: "empty", children: "No messages in the last fetch window." })) : (_jsx("ul", { className: "email-list", children: currentEmails.map((email) => (_jsxs("li", { children: [_jsx("div", { className: "email-subject", children: email.subject || "(No subject)" }), _jsxs("div", { className: "email-meta", children: [_jsx("span", { children: email.sender.display_name ?? email.sender.email }), email.date && _jsx("span", { children: formatDate(email.date) })] })] }, email.uid))) })) })), activeTab === "senders" && (_jsx("div", { className: "tab-content", children: isLoadingGroups ? (_jsx("p", { className: "empty", children: "Loading sender groups\u2026" })) : currentSenderGroups.length === 0 ? (_jsx("p", { className: "empty", children: "No cached messages yet. Try a full sync." })) : (_jsx("div", { className: "sender-groups", children: currentSenderGroups.map((group) => {
+                                            }, disabled: removingAccount === account.email, "aria-label": `Disconnect ${account.email}`, children: removingAccount === account.email ? "…" : "✕" })] }, account.email))) }))] })] }), _jsxs("main", { className: "content", children: [error && _jsx("div", { className: "alert error", children: error }), info && _jsx("div", { className: "alert info", children: info }), selectedAccount ? (_jsxs("div", { className: "mailbox", children: [_jsxs("header", { className: "mailbox-header", children: [_jsxs("div", { children: [_jsx("h2", { children: selectedAccount }), _jsxs("p", { className: "mailbox-subtitle", children: ["Connected via ", providerLabels[accounts.find((acct) => acct.email === selectedAccount)?.provider ?? ACCOUNT_PROVIDER]] })] }), _jsxs("div", { className: "mailbox-actions", children: [_jsx("button", { type: "button", className: "link", onClick: refreshEmails, children: "Refresh recent" }), _jsx("button", { type: "button", className: "link", onClick: handleFullSync, disabled: isSyncing, children: isSyncing ? "Syncing…" : "Full sync" })] })] }), _jsxs("div", { className: "mailbox-stats", role: "status", "aria-live": "polite", children: [_jsxs("span", { children: [_jsx("strong", { children: currentEmails.length.toLocaleString() }), " cached message", currentEmails.length === 1 ? "" : "s"] }), syncReport && (_jsxs("span", { children: ["Last full sync stored ", _jsx("strong", { children: syncReport.stored.toLocaleString() }), " • ", "fetched ", syncReport.fetched.toLocaleString()] })), syncProgress && syncProgress.total_batches > 0 && (_jsxs("span", { children: ["Batch ", syncProgress.batch, "/", syncProgress.total_batches, " (", syncProgress.fetched.toLocaleString(), " fetched)"] }))] }), syncProgress && syncProgress.total_batches > 0 && (_jsx("div", { className: "sync-progress-bar", "aria-hidden": "true", children: _jsx("div", { className: "sync-progress-value", style: { width: `${Math.min(100, Math.round((syncProgress.batch / syncProgress.total_batches) * 100))}%` } }) })), _jsx("nav", { className: "tab-bar", "aria-label": "Mailbox views", children: tabs.map((tab) => (_jsxs("button", { type: "button", className: clsx("tab", { active: activeTab === tab.key }), onClick: () => setActiveTab(tab.key), children: [_jsx("span", { children: tab.label }), _jsx("small", { children: tab.description })] }, tab.key))) }), _jsxs("section", { className: "tab-panel", "aria-live": "polite", children: [activeTab === "recent" && (_jsx("div", { className: "tab-content", children: currentEmails.length === 0 ? (_jsx("p", { className: "empty", children: "No messages in the last fetch window." })) : (_jsx("ul", { className: "email-list", children: currentEmails.map((email) => (_jsxs("li", { children: [_jsx("div", { className: "email-subject", children: email.subject || "(No subject)" }), _jsxs("div", { className: "email-meta", children: [_jsx("span", { children: email.sender.display_name ?? email.sender.email }), email.date && _jsx("span", { children: formatDate(email.date) })] })] }, email.uid))) })) })), activeTab === "senders" && (_jsx("div", { className: "tab-content", children: isLoadingGroups ? (_jsx("p", { className: "empty", children: "Loading sender groups\u2026" })) : currentSenderGroups.length === 0 ? (_jsx("p", { className: "empty", children: "No cached messages yet. Try a full sync." })) : (_jsx("div", { className: "sender-groups", children: currentSenderGroups.map((group) => {
                                                 const isExpanded = expandedSenderForAccount === group.sender_email;
                                                 return (_jsxs("div", { className: clsx("sender-group", `status-${group.status}`), children: [_jsxs("button", { type: "button", className: "sender-header", onClick: () => toggleSenderExpansion(group.sender_email), children: [_jsxs("div", { className: "sender-ident", children: [_jsx("h3", { children: group.sender_display }), _jsx("span", { className: "sender-email", children: group.sender_email })] }), _jsxs("div", { className: "sender-meta", children: [_jsx("span", { className: clsx("status-pill", group.status), children: statusLabel(group.status) }), _jsxs("span", { className: "sender-count", children: [group.message_count, " message", group.message_count === 1 ? "" : "s"] })] })] }), _jsx("div", { className: "status-actions", children: ["allowed", "neutral", "blocked"].map((status) => (_jsx("button", { type: "button", className: clsx("status-button", status, {
                                                                     active: group.status === status

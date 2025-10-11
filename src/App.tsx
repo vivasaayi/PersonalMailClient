@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ChangeEvent } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
+import { appWindow } from "@tauri-apps/api/window";
 import clsx from "clsx";
 import dayjs from "dayjs";
 import type {
@@ -10,6 +11,7 @@ import type {
   Provider,
   SenderGroup,
   SenderStatus,
+  SyncProgress,
   SyncReport
 } from "./types";
 
@@ -68,6 +70,7 @@ export default function App() {
   const [statusUpdating, setStatusUpdating] = useState<string | null>(null);
   const [pendingDeleteUid, setPendingDeleteUid] = useState<string | null>(null);
   const [syncReports, setSyncReports] = useState<Record<string, SyncReport | null>>({});
+  const [syncProgressByAccount, setSyncProgressByAccount] = useState<Record<string, SyncProgress | null>>({});
   const [periodicMinutesByAccount, setPeriodicMinutesByAccount] = useState<Record<string, number>>({});
   const [isSavingPeriodic, setIsSavingPeriodic] = useState(false);
   const [isApplyingBlockFilter, setIsApplyingBlockFilter] = useState(false);
@@ -87,6 +90,78 @@ export default function App() {
     return senderGroupsByAccount[selectedAccount] ?? [];
   }, [selectedAccount, senderGroupsByAccount]);
 
+  const loadCachedEmails = useCallback(
+    async (accountEmail: string, limit = 1000) => {
+      try {
+        const cached = await invoke<EmailSummary[]>("list_recent_messages", {
+          email: accountEmail,
+          limit
+        });
+        setEmailsByAccount((prev: Record<string, EmailSummary[]>) => ({
+          ...prev,
+          [accountEmail]: cached
+        }));
+      } catch (err) {
+        console.error(err);
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    let mounted = true;
+    let cleanup: (() => void) | undefined;
+
+    const register = async () => {
+  cleanup = await appWindow.listen<SyncProgress>("full-sync-progress", (event) => {
+        if (!mounted || !event.payload) {
+          return;
+        }
+        const payload = event.payload;
+        setSyncProgressByAccount((prev: Record<string, SyncProgress | null>) => ({
+          ...prev,
+          [payload.email]: payload
+        }));
+
+        if (selectedAccount === payload.email && payload.total_batches > 0) {
+          const percent = Math.min(
+            100,
+            Math.round((payload.batch / payload.total_batches) * 100)
+          );
+          setInfo(`Full sync in progress… ${percent}% (${payload.fetched.toLocaleString()} messages)`);
+          loadCachedEmails(payload.email, 1000).catch((err) => {
+            console.error("Failed to load cached emails during sync", err);
+          });
+        }
+      });
+    };
+
+    register().catch((err) => {
+      console.error("Failed to register sync progress listener", err);
+    });
+
+    return () => {
+      mounted = false;
+      if (cleanup) {
+        cleanup();
+      }
+    };
+  }, [selectedAccount, loadCachedEmails]);
+
+  // Periodic polling for emails every 30 seconds
+  useEffect(() => {
+    if (!selectedAccount) return;
+
+    const interval = setInterval(() => {
+      loadCachedEmails(selectedAccount, 1000).catch((err) => {
+        console.error("Failed to load cached emails during periodic poll", err);
+      });
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [selectedAccount, loadCachedEmails]);
+
   const expandedSenderForAccount = selectedAccount
     ? expandedSenders[selectedAccount] ?? null
     : null;
@@ -96,6 +171,7 @@ export default function App() {
     : 0;
 
   const syncReport = selectedAccount ? syncReports[selectedAccount] ?? null : null;
+  const syncProgress = selectedAccount ? syncProgressByAccount[selectedAccount] ?? null : null;
 
   const handleInputChange = (key: keyof AccountFormState, value: string) => {
     setFormState((prev: AccountFormState) => ({ ...prev, [key]: value }));
@@ -151,13 +227,14 @@ export default function App() {
         if (showToast) {
           setInfo("Mailbox updated.");
         }
+  await loadCachedEmails(account.email, Math.max(limit, 1000));
         await loadSenderGroups(account.email);
       } catch (err) {
         console.error(err);
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [accounts, loadSenderGroups]
+    [accounts, loadCachedEmails, loadSenderGroups]
   );
 
   const submitConnect = async () => {
@@ -270,11 +347,22 @@ export default function App() {
     setError(null);
     setInfo("Running full mailbox sync...");
     setIsSyncing(true);
+    setSyncProgressByAccount((prev: Record<string, SyncProgress | null>) => ({
+      ...prev,
+      [account.email]: {
+        email: account.email,
+        batch: 0,
+        total_batches: 0,
+        fetched: 0,
+        stored: 0,
+        elapsed_ms: 0
+      }
+    }));
     try {
       const report = await invoke<SyncReport>("sync_account_full", {
         provider: account.provider,
         email: account.email,
-        chunk_size: 400
+        chunk_size: 50
       });
       setSyncReports((prev: Record<string, SyncReport | null>) => ({
         ...prev,
@@ -285,13 +373,17 @@ export default function App() {
           1
         )}s.`
       );
-      await refreshEmailsForAccount(account.email, 50, false);
+  await loadCachedEmails(account.email, Math.max(report.stored, 1000));
       await loadSenderGroups(account.email);
     } catch (err) {
       console.error(err);
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setIsSyncing(false);
+      setSyncProgressByAccount((prev: Record<string, SyncProgress | null>) => ({
+        ...prev,
+        [account.email]: null
+      }));
     }
   };
 
@@ -605,6 +697,35 @@ export default function App() {
                 </button>
               </div>
             </header>
+
+            <div className="mailbox-stats" role="status" aria-live="polite">
+              <span>
+                <strong>{currentEmails.length.toLocaleString()}</strong> cached message
+                {currentEmails.length === 1 ? "" : "s"}
+              </span>
+              {syncReport && (
+                <span>
+                  Last full sync stored <strong>{syncReport.stored.toLocaleString()}</strong>
+                  {" • "}
+                  fetched {syncReport.fetched.toLocaleString()}
+                </span>
+              )}
+              {syncProgress && syncProgress.total_batches > 0 && (
+                <span>
+                  Batch {syncProgress.batch}/{syncProgress.total_batches} (
+                  {syncProgress.fetched.toLocaleString()} fetched)
+                </span>
+              )}
+            </div>
+
+            {syncProgress && syncProgress.total_batches > 0 && (
+              <div className="sync-progress-bar" aria-hidden="true">
+                <div
+                  className="sync-progress-value"
+                  style={{ width: `${Math.min(100, Math.round((syncProgress.batch / syncProgress.total_batches) * 100))}%` }}
+                />
+              </div>
+            )}
 
             <nav className="tab-bar" aria-label="Mailbox views">
               {tabs.map((tab) => (
