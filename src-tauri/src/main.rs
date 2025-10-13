@@ -71,6 +71,8 @@ async fn connect_account(
     provider: Provider,
     email: String,
     password: String,
+    custom_host: Option<String>,
+    custom_port: Option<u16>,
 ) -> Result<ConnectAccountResponse, String> {
     if email.trim().is_empty() {
         warn!("connect_account missing email address");
@@ -83,7 +85,7 @@ async fn connect_account(
 
     let normalized_email = email.trim().to_lowercase();
     info!(%normalized_email, ?provider, "connecting account");
-    let credentials = Credentials::new(provider, normalized_email.clone(), password);
+    let credentials = Credentials::new(provider, normalized_email.clone(), password, custom_host, custom_port);
     let emails = providers::fetch_recent(&credentials, 25)
         .await
         .map_err(|err| {
@@ -195,7 +197,7 @@ async fn sync_account_full(
     info!(%normalized_email, chunk, "starting full mailbox sync");
     let started = Instant::now();
 
-    let (mut batch_rx, producer_handle) = providers::fetch_all(&credentials, chunk)
+    let (mut batch_rx, producer_handle) = providers::fetch_all(&credentials, None, chunk)
         .await
         .map_err(|err| {
             error!(%normalized_email, ?err, "full mailbox fetch failed");
@@ -265,6 +267,159 @@ async fn sync_account_full(
             error!(%normalized_email, ?err, "full mailbox fetch failed");
             provider_error_to_message(err)
         })?;
+
+    let latest_uid = state
+        .storage
+        .latest_uid_for_account(&normalized_email)
+        .await
+        .map_err(|err| err.to_string())?;
+
+    state
+        .storage
+        .update_sync_state(
+            &normalized_email,
+            latest_uid.as_deref(),
+            true,
+            total_stored,
+        )
+        .await
+        .map_err(|err| err.to_string())?;
+
+    let duration_ms = started.elapsed().as_millis() as u64;
+
+    Ok(SyncReport {
+        fetched: total_fetched,
+        stored: total_stored,
+        duration_ms,
+    })
+}
+
+#[tauri::command]
+async fn sync_account_incremental(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    provider: Provider,
+    email: String,
+    chunk_size: Option<usize>,
+) -> Result<SyncReport, String> {
+    let normalized_email = email.trim().to_lowercase();
+    let chunk = chunk_size.unwrap_or(50);
+
+    let credentials = {
+        let accounts = state.accounts.read().await;
+        accounts
+            .get(&normalized_email)
+            .cloned()
+            .ok_or_else(|| "Account is not connected".to_string())?
+    };
+
+    if credentials.provider != provider {
+        warn!(
+            %normalized_email,
+            stored_provider = ?credentials.provider,
+            requested_provider = ?provider,
+            "provider mismatch for incremental sync"
+        );
+        return Err("Provider mismatch for stored credentials".into());
+    }
+
+    let since_uid = state
+        .storage
+        .latest_uid_for_account(&normalized_email)
+        .await
+        .map_err(|err| err.to_string())?
+        .and_then(|value| value.parse::<u32>().ok());
+
+    info!(%normalized_email, chunk, since_uid, "starting incremental mailbox sync");
+    let started = Instant::now();
+
+    let (mut batch_rx, producer_handle) = providers::fetch_all(&credentials, since_uid, chunk)
+        .await
+        .map_err(|err| {
+            error!(%normalized_email, ?err, "incremental mailbox fetch failed");
+            provider_error_to_message(err)
+        })?;
+
+    let mut total_fetched = 0usize;
+    let mut total_stored = 0usize;
+
+    while let Some(batch_result) = batch_rx.recv().await {
+        if batch_result.messages.is_empty() {
+            continue;
+        }
+
+        let mut inserts = Vec::with_capacity(batch_result.messages.len());
+        let mut analyses = Vec::with_capacity(batch_result.messages.len());
+
+        for envelope in batch_result.messages {
+            let flags_slice = if envelope.flags.is_empty() {
+                None
+            } else {
+                Some(envelope.flags.as_slice())
+            };
+            let (insert, analysis) = build_records(
+                &normalized_email,
+                &envelope.summary,
+                envelope.snippet.clone(),
+                envelope.body.clone(),
+                flags_slice,
+            );
+            inserts.push(insert);
+            analyses.push(analysis);
+        }
+
+        total_fetched += inserts.len();
+
+        if let Err(err) = state.storage.upsert_messages(inserts).await {
+            error!(%normalized_email, ?err, "failed to persist messages after incremental sync batch");
+        } else {
+            total_stored += batch_result.fetched;
+        }
+
+        if let Err(err) = state.storage.upsert_analysis(analyses).await {
+            error!(%normalized_email, ?err, "failed to persist analyses after incremental sync batch");
+        }
+
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        let payload = SyncProgressPayload {
+            email: normalized_email.clone(),
+            batch: batch_result.index,
+            total_batches: batch_result.total,
+            fetched: total_fetched,
+            stored: total_stored,
+            elapsed_ms,
+        };
+
+        if let Err(err) = app.emit_to("main", "full-sync-progress", &payload) {
+            warn!(%normalized_email, ?err, "failed to emit incremental-sync progress event");
+        }
+    }
+
+    producer_handle
+        .await
+        .map_err(|err| ProviderError::Other(format!("Background task failure: {err}")))
+        .and_then(|result| result)
+        .map_err(|err| {
+            error!(%normalized_email, ?err, "incremental mailbox fetch failed");
+            provider_error_to_message(err)
+        })?;
+
+    let latest_uid = state
+        .storage
+        .latest_uid_for_account(&normalized_email)
+        .await
+        .map_err(|err| err.to_string())?;
+
+    state
+        .storage
+        .update_sync_state(
+            &normalized_email,
+            latest_uid.as_deref(),
+            false,
+            total_stored,
+        )
+        .await
+        .map_err(|err| err.to_string())?;
 
     let duration_ms = started.elapsed().as_millis() as u64;
 
@@ -348,7 +503,7 @@ async fn list_recent_messages(
     limit: Option<usize>,
 ) -> Result<Vec<EmailSummary>, String> {
     let normalized_email = email.trim().to_lowercase();
-    let limit = limit.unwrap_or(200).clamp(1, 5_000);
+    let limit = limit.unwrap_or(200).clamp(1, 100_000);
 
     let cached = state
         .storage
@@ -370,6 +525,16 @@ async fn list_recent_messages(
         .collect();
 
     Ok(messages)
+}
+
+#[tauri::command]
+async fn cached_message_count(state: State<'_, AppState>, email: String) -> Result<usize, String> {
+    let normalized_email = email.trim().to_lowercase();
+    state
+        .storage
+        .message_count_for_account(&normalized_email)
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -810,9 +975,11 @@ fn main() {
             connect_account,
             fetch_recent,
             sync_account_full,
+            sync_account_incremental,
             list_sender_groups,
             set_sender_status,
             list_recent_messages,
+            cached_message_count,
             delete_message_remote,
             configure_periodic_sync,
             apply_block_filter,

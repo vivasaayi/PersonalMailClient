@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
 import { appWindow } from "@tauri-apps/api/window";
@@ -18,8 +18,12 @@ import type {
 const providerLabels: Record<Provider, string> = {
   gmail: "Gmail",
   outlook: "Outlook / Live",
-  yahoo: "Yahoo Mail"
+  yahoo: "Yahoo Mail",
+  custom: "Custom IMAP"
 };
+
+const MIN_CACHE_FETCH = 1_000;
+const MAX_CACHE_FETCH = 50_000;
 
 const ACCOUNT_PROVIDER: Provider = "yahoo";
 
@@ -44,13 +48,19 @@ const tabs: { key: TabKey; label: string; description: string }[] = [
 ];
 
 interface AccountFormState {
+  provider: Provider;
   email: string;
   password: string;
+  customHost?: string;
+  customPort?: string;
 }
 
 const initialFormState: AccountFormState = {
+  provider: ACCOUNT_PROVIDER,
   email: "",
-  password: ""
+  password: "",
+  customHost: "",
+  customPort: "993"
 };
 
 export default function App() {
@@ -58,6 +68,7 @@ export default function App() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null);
   const [emailsByAccount, setEmailsByAccount] = useState<Record<string, EmailSummary[]>>({});
+  const [cachedCountsByAccount, setCachedCountsByAccount] = useState<Record<string, number>>({});
   const [senderGroupsByAccount, setSenderGroupsByAccount] = useState<Record<string, SenderGroup[]>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -75,6 +86,8 @@ export default function App() {
   const [isSavingPeriodic, setIsSavingPeriodic] = useState(false);
   const [isApplyingBlockFilter, setIsApplyingBlockFilter] = useState(false);
   const [blockFolder, setBlockFolder] = useState<string>("Blocked");
+  const maxCachedItemsByAccount = useRef<Record<string, number>>({});
+  const cachedCountRef = useRef<Record<string, number>>({});
 
   const currentEmails = useMemo(() => {
     if (!selectedAccount) {
@@ -91,12 +104,28 @@ export default function App() {
   }, [selectedAccount, senderGroupsByAccount]);
 
   const loadCachedEmails = useCallback(
-    async (accountEmail: string, limit = 1000) => {
+    async (accountEmail: string, limit?: number) => {
       try {
+        const previousMax = maxCachedItemsByAccount.current[accountEmail] ?? 0;
+        const knownTotal = cachedCountRef.current[accountEmail] ?? 0;
+        const requested = limit ?? previousMax;
+        const baseline = requested > 0 ? requested : MIN_CACHE_FETCH;
+        const desired = Math.max(baseline, previousMax, knownTotal, MIN_CACHE_FETCH);
+        const effectiveLimit = Math.min(desired, MAX_CACHE_FETCH);
+        maxCachedItemsByAccount.current[accountEmail] = Math.max(
+          maxCachedItemsByAccount.current[accountEmail] ?? 0,
+          effectiveLimit,
+          Math.min(knownTotal, MAX_CACHE_FETCH)
+        );
         const cached = await invoke<EmailSummary[]>("list_recent_messages", {
           email: accountEmail,
-          limit
+          limit: effectiveLimit
         });
+        maxCachedItemsByAccount.current[accountEmail] = Math.max(
+          maxCachedItemsByAccount.current[accountEmail] ?? 0,
+          cached.length,
+          Math.min(knownTotal, MAX_CACHE_FETCH)
+        );
         setEmailsByAccount((prev: Record<string, EmailSummary[]>) => ({
           ...prev,
           [accountEmail]: cached
@@ -109,12 +138,41 @@ export default function App() {
     []
   );
 
+  const recordCachedCount = useCallback((accountEmail: string, count: number) => {
+    cachedCountRef.current = {
+      ...cachedCountRef.current,
+      [accountEmail]: count
+    };
+    setCachedCountsByAccount(cachedCountRef.current);
+    const capped = Math.min(count, MAX_CACHE_FETCH);
+    maxCachedItemsByAccount.current[accountEmail] = Math.max(
+      maxCachedItemsByAccount.current[accountEmail] ?? 0,
+      capped,
+      MIN_CACHE_FETCH
+    );
+  }, []);
+
+  const loadCachedCount = useCallback(
+    async (accountEmail: string) => {
+      try {
+        const count = await invoke<number>("cached_message_count", { email: accountEmail });
+        recordCachedCount(accountEmail, count);
+        return count;
+      } catch (err) {
+        console.error(err);
+        setError(err instanceof Error ? err.message : String(err));
+        return undefined;
+      }
+    },
+    [recordCachedCount]
+  );
+
   useEffect(() => {
     let mounted = true;
     let cleanup: (() => void) | undefined;
 
     const register = async () => {
-  cleanup = await appWindow.listen<SyncProgress>("full-sync-progress", (event) => {
+      cleanup = await appWindow.listen<SyncProgress>("full-sync-progress", (event) => {
         if (!mounted || !event.payload) {
           return;
         }
@@ -130,7 +188,12 @@ export default function App() {
             Math.round((payload.batch / payload.total_batches) * 100)
           );
           setInfo(`Full sync in progress… ${percent}% (${payload.fetched.toLocaleString()} messages)`);
-          loadCachedEmails(payload.email, 1000).catch((err) => {
+          const progressLimit = Math.max(
+            maxCachedItemsByAccount.current[payload.email] ?? 0,
+            payload.total_batches > 0 ? payload.total_batches * 50 : payload.fetched,
+            MIN_CACHE_FETCH
+          );
+          loadCachedEmails(payload.email, progressLimit).catch((err) => {
             console.error("Failed to load cached emails during sync", err);
           });
         }
@@ -149,19 +212,6 @@ export default function App() {
     };
   }, [selectedAccount, loadCachedEmails]);
 
-  // Periodic polling for emails every 30 seconds
-  useEffect(() => {
-    if (!selectedAccount) return;
-
-    const interval = setInterval(() => {
-      loadCachedEmails(selectedAccount, 1000).catch((err) => {
-        console.error("Failed to load cached emails during periodic poll", err);
-      });
-    }, 30000);
-
-    return () => clearInterval(interval);
-  }, [selectedAccount, loadCachedEmails]);
-
   const expandedSenderForAccount = selectedAccount
     ? expandedSenders[selectedAccount] ?? null
     : null;
@@ -172,6 +222,9 @@ export default function App() {
 
   const syncReport = selectedAccount ? syncReports[selectedAccount] ?? null : null;
   const syncProgress = selectedAccount ? syncProgressByAccount[selectedAccount] ?? null : null;
+  const totalCachedCount = selectedAccount
+    ? cachedCountsByAccount[selectedAccount] ?? currentEmails.length
+    : currentEmails.length;
 
   const handleInputChange = (key: keyof AccountFormState, value: string) => {
     setFormState((prev: AccountFormState) => ({ ...prev, [key]: value }));
@@ -211,31 +264,57 @@ export default function App() {
         return;
       }
       if (showToast) {
-        setInfo("Refreshing mailbox...");
+        setInfo("Checking for new mail...");
       }
       setError(null);
       try {
-        const recentEmails = await invoke<EmailSummary[]>("fetch_recent", {
+        const report = await invoke<SyncReport>("sync_account_incremental", {
           provider: account.provider,
           email: account.email,
-          limit
+          chunk_size: 50
         });
-        setEmailsByAccount((prev: Record<string, EmailSummary[]>) => ({
+        setSyncReports((prev: Record<string, SyncReport | null>) => ({
           ...prev,
-          [account.email]: recentEmails
+          [account.email]: report
         }));
         if (showToast) {
-          setInfo("Mailbox updated.");
+          if (report.stored > 0) {
+            setInfo(
+              `Fetched ${report.fetched} new message${report.fetched === 1 ? "" : "s"}.`
+            );
+          } else {
+            setInfo("Mailbox is up to date.");
+          }
         }
-  await loadCachedEmails(account.email, Math.max(limit, 1000));
+        const existingCount = maxCachedItemsByAccount.current[account.email] ?? 0;
+        const fetchLimit = Math.max(limit, existingCount, MIN_CACHE_FETCH);
+        await loadCachedEmails(account.email, fetchLimit);
         await loadSenderGroups(account.email);
+        await loadCachedCount(account.email);
       } catch (err) {
         console.error(err);
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [accounts, loadCachedEmails, loadSenderGroups]
+    [accounts, loadCachedEmails, loadSenderGroups, loadCachedCount]
   );
+
+  // Periodic polling for emails every 30 seconds
+  useEffect(() => {
+    if (!selectedAccount) return;
+
+    const interval = setInterval(() => {
+      const periodicLimit = Math.max(
+        maxCachedItemsByAccount.current[selectedAccount] ?? 0,
+        MIN_CACHE_FETCH
+      );
+      refreshEmailsForAccount(selectedAccount, periodicLimit, false).catch((err) => {
+        console.error("Failed to run incremental sync during periodic poll", err);
+      });
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [selectedAccount, refreshEmailsForAccount]);
 
   const submitConnect = async () => {
     setError(null);
@@ -243,9 +322,11 @@ export default function App() {
     setIsSubmitting(true);
     try {
       const payload = await invoke<ConnectAccountResponse>("connect_account", {
-        provider: ACCOUNT_PROVIDER,
+        provider: formState.provider,
         email: formState.email,
-        password: formState.password
+        password: formState.password,
+        customHost: formState.customHost || undefined,
+        customPort: formState.customPort ? parseInt(formState.customPort) : undefined
       });
 
       setAccounts((prev: Account[]) => {
@@ -262,12 +343,17 @@ export default function App() {
         ...prev,
         [payload.account.email]: payload.emails
       }));
+      maxCachedItemsByAccount.current[payload.account.email] = Math.max(
+        payload.emails.length,
+        MIN_CACHE_FETCH
+      );
 
       await loadSenderGroups(payload.account.email);
+      await loadCachedCount(payload.account.email);
 
       setSelectedAccount(payload.account.email);
       setActiveTab("senders");
-      setInfo(`Connected to Yahoo as ${payload.account.email}`);
+      setInfo(`Connected to ${providerLabels[payload.account.provider]} as ${payload.account.email}`);
       setFormState(initialFormState);
     } catch (err) {
       console.error(err);
@@ -314,6 +400,12 @@ export default function App() {
         delete next[email];
         return next;
       });
+
+      delete maxCachedItemsByAccount.current[email];
+      const nextCountMap = { ...cachedCountRef.current };
+      delete nextCountMap[email];
+      cachedCountRef.current = nextCountMap;
+      setCachedCountsByAccount(nextCountMap);
 
       setSyncReports((prev: Record<string, SyncReport | null>) => {
         const next = { ...prev };
@@ -373,7 +465,12 @@ export default function App() {
           1
         )}s.`
       );
-  await loadCachedEmails(account.email, Math.max(report.stored, 1000));
+      const fetchLimit = Math.max(
+        report.stored,
+        maxCachedItemsByAccount.current[account.email] ?? 0,
+        MIN_CACHE_FETCH
+      );
+      await loadCachedEmails(account.email, fetchLimit);
       await loadSenderGroups(account.email);
     } catch (err) {
       console.error(err);
@@ -552,10 +649,40 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (selectedAccount) {
-      void loadSenderGroups(selectedAccount);
+    if (!selectedAccount) {
+      return;
     }
-  }, [selectedAccount, loadSenderGroups]);
+
+    let cancelled = false;
+
+    const bootstrap = async () => {
+      try {
+        const count = await loadCachedCount(selectedAccount);
+        if (cancelled) return;
+        const cappedTotal = count ? Math.min(count, MAX_CACHE_FETCH) : 0;
+        const initialFetchLimit = Math.max(
+          cappedTotal,
+          maxCachedItemsByAccount.current[selectedAccount] ?? 0,
+          2000,
+          MIN_CACHE_FETCH
+        );
+
+        await loadCachedEmails(selectedAccount, initialFetchLimit);
+        if (cancelled) return;
+        await loadSenderGroups(selectedAccount);
+        if (cancelled) return;
+        await refreshEmailsForAccount(selectedAccount, initialFetchLimit, false);
+      } catch (err) {
+        console.error("Failed to bootstrap account cache", err);
+      }
+    };
+
+    bootstrap();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedAccount, loadCachedCount, loadCachedEmails, loadSenderGroups, refreshEmailsForAccount]);
 
   const toggleSenderExpansion = (senderEmail: string) => {
     if (!selectedAccount) {
@@ -590,18 +717,33 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+  <aside className="sidebar">
         <h1>Yahoo Mail Client</h1>
         <p className="subtitle">Connect using Yahoo app passwords over TLS.</p>
 
         <section className="card">
-          <h2>Add Yahoo account</h2>
+          <h2>Add Account</h2>
+          <label className="field">
+            <span>Provider</span>
+            <select
+              value={formState.provider}
+              onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                handleInputChange("provider", event.target.value as Provider)
+              }
+            >
+              {Object.entries(providerLabels).map(([key, label]) => (
+                <option key={key} value={key}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
           <label className="field">
             <span>Email address</span>
             <input
               type="email"
               autoComplete="username"
-              placeholder="your.email@yahoo.com"
+              placeholder="your.email@example.com"
               value={formState.email}
               onChange={(event: ChangeEvent<HTMLInputElement>) =>
                 handleInputChange("email", event.target.value)
@@ -609,19 +751,41 @@ export default function App() {
             />
           </label>
           <label className="field">
-            <span>App password</span>
+            <span>Password</span>
             <input
               type="password"
               autoComplete="current-password"
-              placeholder="16-character Yahoo app password"
+              placeholder="App password or server password"
               value={formState.password}
               onChange={(event: ChangeEvent<HTMLInputElement>) =>
                 handleInputChange("password", event.target.value)
               }
             />
             <small className="hint">
-              Generate via Yahoo Account Security → Manage app passwords → Mail
+              For Yahoo: Generate via Account Security → Manage app passwords → Mail
             </small>
+          </label>
+          <label className="field">
+            <span>Custom IMAP Host (optional)</span>
+            <input
+              type="text"
+              placeholder="e.g., imap.example.com"
+              value={formState.customHost || ""}
+              onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                handleInputChange("customHost", event.target.value)
+              }
+            />
+          </label>
+          <label className="field">
+            <span>Custom IMAP Port (optional)</span>
+            <input
+              type="number"
+              placeholder="993"
+              value={formState.customPort || "993"}
+              onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                handleInputChange("customPort", event.target.value)
+              }
+            />
           </label>
           <button
             type="button"
@@ -700,32 +864,35 @@ export default function App() {
 
             <div className="mailbox-stats" role="status" aria-live="polite">
               <span>
-                <strong>{currentEmails.length.toLocaleString()}</strong> cached message
-                {currentEmails.length === 1 ? "" : "s"}
+                <strong>{currentEmails.length.toLocaleString()}</strong>
+                {totalCachedCount > currentEmails.length
+                  ? ` of ${totalCachedCount.toLocaleString()}`
+                  : ""}{" "}
+                cached message{totalCachedCount === 1 ? "" : "s"}
               </span>
-              {syncReport && (
+              {syncReport ? (
                 <span>
                   Last full sync stored <strong>{syncReport.stored.toLocaleString()}</strong>
                   {" • "}
                   fetched {syncReport.fetched.toLocaleString()}
                 </span>
-              )}
-              {syncProgress && syncProgress.total_batches > 0 && (
+              ) : null}
+              {syncProgress && syncProgress.total_batches > 0 ? (
                 <span>
                   Batch {syncProgress.batch}/{syncProgress.total_batches} (
                   {syncProgress.fetched.toLocaleString()} fetched)
                 </span>
-              )}
+              ) : null}
             </div>
 
-            {syncProgress && syncProgress.total_batches > 0 && (
+            {syncProgress && syncProgress.total_batches > 0 ? (
               <div className="sync-progress-bar" aria-hidden="true">
                 <div
                   className="sync-progress-value"
                   style={{ width: `${Math.min(100, Math.round((syncProgress.batch / syncProgress.total_batches) * 100))}%` }}
                 />
               </div>
-            )}
+            ) : null}
 
             <nav className="tab-bar" aria-label="Mailbox views">
               {tabs.map((tab) => (

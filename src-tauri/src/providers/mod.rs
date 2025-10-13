@@ -69,9 +69,10 @@ pub struct BatchResult {
 
 pub async fn fetch_all(
     credentials: &Credentials,
+    since_uid: Option<u32>,
     chunk_size: usize,
 ) -> Result<(UnboundedReceiver<BatchResult>, JoinHandle<Result<(), ProviderError>>), ProviderError> {
-    imap::fetch_all(credentials, chunk_size).await
+    imap::fetch_all(credentials, since_uid, chunk_size).await
 }
 
 pub async fn delete_message(credentials: &Credentials, uid: &str) -> Result<(), ProviderError> {

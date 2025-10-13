@@ -13,6 +13,7 @@ pub enum Provider {
     Gmail,
     Outlook,
     Yahoo,
+    Custom,
 }
 
 impl Provider {
@@ -21,6 +22,7 @@ impl Provider {
             Provider::Gmail => "imap.gmail.com",
             Provider::Outlook => "outlook.office365.com",
             Provider::Yahoo => "imap.mail.yahoo.com",
+            Provider::Custom => "localhost", // Default for custom, but will be overridden
         }
     }
 
@@ -29,6 +31,7 @@ impl Provider {
             Provider::Gmail => "Gmail",
             Provider::Outlook => "Outlook / Live",
             Provider::Yahoo => "Yahoo Mail",
+            Provider::Custom => "Custom IMAP",
         }
     }
 }
@@ -65,14 +68,18 @@ pub struct Credentials {
     pub provider: Provider,
     pub email: String,
     pub password: String,
+    pub custom_host: Option<String>,
+    pub custom_port: Option<u16>,
 }
 
 impl Credentials {
-    pub fn new(provider: Provider, email: String, password: String) -> Self {
+    pub fn new(provider: Provider, email: String, password: String, custom_host: Option<String>, custom_port: Option<u16>) -> Self {
         Self {
             provider,
             email,
             password,
+            custom_host,
+            custom_port,
         }
     }
 

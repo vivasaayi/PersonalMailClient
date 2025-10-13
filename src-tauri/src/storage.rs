@@ -117,6 +117,15 @@ pub struct CachedMessageSummary {
     pub date: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct AccountSyncState {
+    pub account_email: String,
+    pub last_full_sync: Option<i64>,
+    pub last_incremental_sync: Option<i64>,
+    pub last_uid: Option<String>,
+    pub total_messages: i64,
+}
+
 #[derive(Clone)]
 pub struct Storage {
     conn: Arc<parking_lot::Mutex<Connection>>,
@@ -218,6 +227,14 @@ impl Storage {
                 sentiment TEXT,
                 categories TEXT,
                 FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS account_sync_state (
+                account_email TEXT PRIMARY KEY,
+                last_full_sync INTEGER,
+                last_incremental_sync INTEGER,
+                last_uid TEXT,
+                total_messages INTEGER DEFAULT 0
             );
             "#,
         )?;
@@ -391,6 +408,27 @@ impl Storage {
         result
     }
 
+    pub async fn message_count_for_account(&self, account_email: &str) -> Result<usize> {
+        let conn = self.conn.clone();
+        let account = account_email.to_owned();
+        let join_result = tokio::task::spawn_blocking(move || -> Result<usize> {
+            let conn = conn.lock();
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT COUNT(*) FROM messages
+                WHERE account_email = ?
+                "#,
+            )?;
+
+            let count: i64 = stmt.query_row(params![account], |row| row.get(0))?;
+            Ok(count.max(0) as usize)
+        })
+        .await
+        .map_err(map_join_error)?;
+
+        join_result
+    }
+
     pub async fn recent_message_summaries(
         &self,
         account_email: &str,
@@ -403,7 +441,7 @@ impl Storage {
         let conn = self.conn.clone();
         let cipher = self.cipher.clone();
         let account = account_email.to_owned();
-        let limit = limit.min(5_000);
+    let limit = limit.min(100_000);
 
         let result = tokio::task::spawn_blocking(move || -> Result<Vec<CachedMessageSummary>> {
             let conn = conn.lock();
@@ -444,6 +482,113 @@ impl Storage {
         .map_err(map_join_error)?;
 
         result
+    }
+
+    pub async fn latest_uid_for_account(&self, account_email: &str) -> Result<Option<String>> {
+        let conn = self.conn.clone();
+        let account = account_email.to_owned();
+        let join_result = tokio::task::spawn_blocking(move || -> Result<Option<String>> {
+            let conn = conn.lock();
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT uid FROM messages
+                WHERE account_email = ?
+                ORDER BY CAST(uid AS INTEGER) DESC, id DESC
+                LIMIT 1
+                "#,
+            )?;
+
+            let uid = stmt
+                .query_row(params![account], |row| row.get::<_, String>(0))
+                .optional()?;
+            Ok(uid)
+        })
+        .await
+        .map_err(map_join_error)?;
+
+        join_result
+    }
+
+    pub async fn update_sync_state(
+        &self,
+        account_email: &str,
+        last_uid: Option<&str>,
+        is_full: bool,
+        total_messages: usize,
+    ) -> Result<()> {
+        let conn = self.conn.clone();
+        let account = account_email.to_lowercase();
+        let last_uid_owned = last_uid.map(|value| value.to_string());
+        let join_result = tokio::task::spawn_blocking(move || -> Result<()> {
+            let conn = conn.lock();
+            let now = Utc::now().timestamp();
+            let last_full = if is_full { Some(now) } else { None };
+            let last_incremental = Some(now);
+
+            conn.execute(
+                r#"
+                INSERT INTO account_sync_state (
+                    account_email,
+                    last_full_sync,
+                    last_incremental_sync,
+                    last_uid,
+                    total_messages
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(account_email) DO UPDATE SET
+                    last_full_sync = COALESCE(excluded.last_full_sync, account_sync_state.last_full_sync),
+                    last_incremental_sync = excluded.last_incremental_sync,
+                    last_uid = COALESCE(excluded.last_uid, account_sync_state.last_uid),
+                    total_messages = excluded.total_messages
+                "#,
+                params![
+                    account,
+                    last_full,
+                    last_incremental,
+                    last_uid_owned,
+                    total_messages as i64
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(map_join_error)?;
+
+        join_result
+    }
+
+    pub async fn account_sync_state(
+        &self,
+        account_email: &str,
+    ) -> Result<Option<AccountSyncState>> {
+        let conn = self.conn.clone();
+        let account = account_email.to_lowercase();
+        let join_result = tokio::task::spawn_blocking(move || -> Result<Option<AccountSyncState>> {
+            let conn = conn.lock();
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT account_email, last_full_sync, last_incremental_sync, last_uid, total_messages
+                FROM account_sync_state
+                WHERE account_email = ?
+                "#,
+            )?;
+
+            let state = stmt
+                .query_row(params![account], |row| {
+                    Ok(AccountSyncState {
+                        account_email: row.get(0)?,
+                        last_full_sync: row.get(1)?,
+                        last_incremental_sync: row.get(2)?,
+                        last_uid: row.get(3)?,
+                        total_messages: row.get::<_, i64>(4)?,
+                    })
+                })
+                .optional()?;
+            Ok(state)
+        })
+        .await
+        .map_err(map_join_error)?;
+
+        join_result
     }
 
     pub async fn delete_message(&self, account_email: &str, uid: &str) -> Result<()> {

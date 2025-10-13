@@ -1,4 +1,4 @@
-export type Provider = "gmail" | "outlook" | "yahoo";
+export type Provider = "gmail" | "outlook" | "yahoo" | "custom";
 
 export interface Account {
   provider: Provider;
@@ -38,6 +38,14 @@ export interface SenderGroup {
   status: SenderStatus;
   message_count: number;
   messages: AnalyzedMessage[];
+}
+
+export interface ConnectAccountRequest {
+  provider: Provider;
+  email: string;
+  password: string;
+  customHost?: string;
+  customPort?: number;
 }
 
 export interface ConnectAccountResponse {

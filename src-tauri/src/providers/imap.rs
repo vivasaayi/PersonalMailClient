@@ -22,13 +22,14 @@ pub async fn fetch_recent(
 
 pub async fn fetch_all(
     credentials: &Credentials,
+    since_uid: Option<u32>,
     chunk_size: usize,
 ) -> Result<(UnboundedReceiver<BatchResult>, JoinHandle<Result<(), ProviderError>>), ProviderError> {
     let credentials = credentials.clone();
     let chunk = chunk_size.clamp(50, 1000);
     let (tx, rx) = unbounded_channel();
 
-    let handle = task::spawn_blocking(move || fetch_all_blocking(credentials, chunk, tx));
+    let handle = task::spawn_blocking(move || fetch_all_blocking(credentials, since_uid, chunk, tx));
 
     Ok((rx, handle))
 }
@@ -60,11 +61,12 @@ fn fetch_recent_blocking(
     credentials: Credentials,
     limit: usize,
 ) -> Result<Vec<EmailSummary>, ProviderError> {
-    let domain = credentials.provider.imap_host();
+    let domain = credentials.custom_host.as_deref().unwrap_or_else(|| credentials.provider.imap_host());
+    let port = credentials.custom_port.unwrap_or(993);
     let tls = TlsConnector::builder()
         .build()
         .map_err(|err| ProviderError::Network(err.to_string()))?;
-    let client = ::imap::connect((domain, 993), domain, &tls)
+    let client = ::imap::connect((domain, port), domain, &tls)
         .map_err(|err| ProviderError::Network(err.to_string()))?;
 
     let mut session = match client.login(&credentials.email, &credentials.password) {
@@ -107,14 +109,16 @@ fn fetch_recent_blocking(
 
 fn fetch_all_blocking(
     credentials: Credentials,
+    since_uid: Option<u32>,
     chunk_size: usize,
     tx: UnboundedSender<BatchResult>,
 ) -> Result<(), ProviderError> {
-    let domain = credentials.provider.imap_host();
+    let domain = credentials.custom_host.as_deref().unwrap_or_else(|| credentials.provider.imap_host());
+    let port = credentials.custom_port.unwrap_or(993);
     let tls = TlsConnector::builder()
         .build()
         .map_err(|err| ProviderError::Network(err.to_string()))?;
-    let client = ::imap::connect((domain, 993), domain, &tls)
+    let client = ::imap::connect((domain, port), domain, &tls)
         .map_err(|err| ProviderError::Network(err.to_string()))?;
 
     let mut session = match client.login(&credentials.email, &credentials.password) {
@@ -135,8 +139,26 @@ fn fetch_all_blocking(
     let mut sorted = uids.into_iter().collect::<Vec<_>>();
     sorted.sort_unstable();
 
-    let total_batches = (sorted.len() + chunk_size - 1) / chunk_size;
-    for (batch_index, chunk) in sorted.chunks(chunk_size).enumerate() {
+    let filtered: Vec<u32> = match since_uid {
+        Some(threshold) => sorted.into_iter().filter(|uid| *uid > threshold).collect(),
+        None => sorted,
+    };
+
+    if filtered.is_empty() {
+        session.logout()?;
+        return Ok(());
+    }
+
+    info!(
+        account = %credentials.email,
+        total_uids = filtered.len(),
+        chunk_size,
+        since_uid,
+        "full sync message set ready"
+    );
+
+    let total_batches = (filtered.len() + chunk_size - 1) / chunk_size;
+    for (batch_index, chunk) in filtered.chunks(chunk_size).enumerate() {
         let batch_start = Instant::now();
         let query = chunk
             .iter()
@@ -192,11 +214,12 @@ fn fetch_all_blocking(
 }
 
 fn delete_message_blocking(credentials: Credentials, uid: String) -> Result<(), ProviderError> {
-    let domain = credentials.provider.imap_host();
+    let domain = credentials.custom_host.as_deref().unwrap_or_else(|| credentials.provider.imap_host());
+    let port = credentials.custom_port.unwrap_or(993);
     let tls = TlsConnector::builder()
         .build()
         .map_err(|err| ProviderError::Network(err.to_string()))?;
-    let client = ::imap::connect((domain, 993), domain, &tls)
+    let client = ::imap::connect((domain, port), domain, &tls)
         .map_err(|err| ProviderError::Network(err.to_string()))?;
 
     let mut session = match client.login(&credentials.email, &credentials.password) {
@@ -220,11 +243,12 @@ fn move_blocked_blocking(
         return Ok(0);
     }
 
-    let domain = credentials.provider.imap_host();
+    let domain = credentials.custom_host.as_deref().unwrap_or_else(|| credentials.provider.imap_host());
+    let port = credentials.custom_port.unwrap_or(993);
     let tls = TlsConnector::builder()
         .build()
         .map_err(|err| ProviderError::Network(err.to_string()))?;
-    let client = ::imap::connect((domain, 993), domain, &tls)
+    let client = ::imap::connect((domain, port), domain, &tls)
         .map_err(|err| ProviderError::Network(err.to_string()))?;
 
     let mut session = match client.login(&credentials.email, &credentials.password) {
