@@ -4,13 +4,13 @@ import { invoke } from "@tauri-apps/api/tauri";
 import { appWindow } from "@tauri-apps/api/window";
 import clsx from "clsx";
 import dayjs from "dayjs";
-import { AgGridReact } from "ag-grid-react";
-import { ModuleRegistry, AllCommunityModule } from "ag-grid-community";
-import "ag-grid-community/styles/ag-grid.css";
-import "ag-grid-community/styles/ag-theme-alpine.css";
-
-// Register AG Grid modules
-ModuleRegistry.registerModules([AllCommunityModule]);
+import {
+  Box,
+  Alert,
+  Typography,
+  Container
+} from "@mui/material";
+import { Error as ErrorIcon, Info as InfoIcon } from "@mui/icons-material";
 
 import type {
   Account,
@@ -23,6 +23,9 @@ import type {
   SyncProgress,
   SyncReport
 } from "./types";
+import AccountForm from "./components/AccountForm";
+import AccountList from "./components/AccountList";
+import Mailbox from "./components/Mailbox";
 
 const providerLabels: Record<Provider, string> = {
   gmail: "Gmail",
@@ -35,26 +38,6 @@ const MIN_CACHE_FETCH = 1_000;
 const MAX_CACHE_FETCH = 50_000;
 
 const ACCOUNT_PROVIDER: Provider = "yahoo";
-
-type TabKey = "recent" | "senders" | "automation";
-
-const tabs: { key: TabKey; label: string; description: string }[] = [
-  {
-    key: "recent",
-    label: "Recent",
-    description: "Latest messages fetched from the server"
-  },
-  {
-    key: "senders",
-    label: "Senders",
-    description: "Grouped conversations with status controls"
-  },
-  {
-    key: "automation",
-    label: "Automation",
-    description: "Full sync, periodic updates & filters"
-  }
-];
 
 interface AccountFormState {
   provider: Provider;
@@ -72,68 +55,6 @@ const initialFormState: AccountFormState = {
   customPort: "993"
 };
 
-const statusLabel = (status: SenderStatus) => {
-  switch (status) {
-    case "allowed":
-      return "Allowed";
-    case "blocked":
-      return "Blocked";
-    default:
-      return "Neutral";
-  }
-};
-
-// Custom cell renderer for status buttons
-const StatusButtonRenderer = (props: any) => {
-  const { data, onStatusChange, statusUpdating } = props;
-  const statuses: SenderStatus[] = ["allowed", "neutral", "blocked"];
-
-  return (
-    <div className="status-actions">
-      {statuses.map((status) => (
-        <button
-          key={status}
-          type="button"
-          className={clsx("status-button", status, {
-            active: data.status === status
-          })}
-          onClick={() => onStatusChange(data.sender_email, status)}
-          disabled={statusUpdating === data.sender_email || data.status === status}
-        >
-          {statusLabel(status)}
-        </button>
-      ))}
-    </div>
-  );
-};
-
-// Custom cell renderer for sender info
-const SenderInfoRenderer = (props: any) => {
-  const { data, onToggleExpansion, isExpanded } = props;
-
-  return (
-    <button
-      type="button"
-      className="sender-header"
-      onClick={() => onToggleExpansion(data.sender_email)}
-      style={{ width: '100%', textAlign: 'left', border: 'none', background: 'none', cursor: 'pointer' }}
-    >
-      <div className="sender-ident">
-        <h3>{data.sender_display}</h3>
-        <span className="sender-email">{data.sender_email}</span>
-      </div>
-      <div className="sender-meta">
-        <span className={clsx("status-pill", data.status)}>
-          {statusLabel(data.status)}
-        </span>
-        <span className="sender-count">
-          {data.message_count} message{data.message_count === 1 ? "" : "s"}
-        </span>
-      </div>
-    </button>
-  );
-};
-
 export default function App() {
   const [formState, setFormState] = useState<AccountFormState>(initialFormState);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -149,7 +70,6 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [removingAccount, setRemovingAccount] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<TabKey>("senders");
   const [expandedSenders, setExpandedSenders] = useState<Record<string, string | null>>({});
   const [statusUpdating, setStatusUpdating] = useState<string | null>(null);
   const [pendingDeleteUid, setPendingDeleteUid] = useState<string | null>(null);
@@ -471,7 +391,6 @@ export default function App() {
       await loadCachedCount(payload.account.email);
 
       setSelectedAccount(payload.account.email);
-      setActiveTab("senders");
     },
     [loadSenderGroups, loadCachedCount]
   );
@@ -923,43 +842,6 @@ export default function App() {
     });
   };
 
-  // Memoize AG Grid column definitions to prevent unnecessary re-renders
-  const columnDefs = useMemo(() => [
-    {
-      field: 'sender_display' as const,
-      headerName: 'Sender',
-      cellRenderer: SenderInfoRenderer,
-      cellRendererParams: {
-        onToggleExpansion: toggleSenderExpansion,
-        isExpanded: (data: any) => expandedSenderForAccount === data.sender_email
-      },
-      flex: 2,
-      minWidth: 250
-    },
-    {
-      field: 'message_count' as const,
-      headerName: 'Messages',
-      valueFormatter: (params: any) => `${params.value} message${params.value === 1 ? '' : 's'}`,
-      width: 120
-    },
-    {
-      field: 'status' as const,
-      headerName: 'Status',
-      cellRenderer: StatusButtonRenderer,
-      cellRendererParams: {
-        onStatusChange: handleSenderStatusChange,
-        statusUpdating: statusUpdating
-      },
-      width: 200
-    }
-  ], [toggleSenderExpansion, expandedSenderForAccount, handleSenderStatusChange, statusUpdating]);
-
-  const defaultColDef = useMemo(() => ({
-    resizable: true,
-    sortable: true,
-    filter: true
-  }), []);
-
   const formatDate = (value?: string | null) => {
     if (!value) {
       return "";
@@ -968,454 +850,120 @@ export default function App() {
   };
 
   return (
-    <div className="app-shell">
-  <aside className="sidebar">
-        <h1>Yahoo Mail Client</h1>
-        <p className="subtitle">Connect using Yahoo app passwords over TLS.</p>
+    <Container maxWidth={false} sx={{ height: '100vh', py: 2 }}>
+      <Box display="flex" gap={3} height="100%">
+        {/* Sidebar */}
+        <Box
+          component="aside"
+          sx={{
+            width: 360,
+            flexShrink: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2
+          }}
+        >
+          <Box sx={{ mb: 2 }}>
+            <Typography variant="h4" component="h1" gutterBottom>
+              Yahoo Mail Client
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Connect using Yahoo app passwords over TLS.
+            </Typography>
+          </Box>
 
-        <section className="card">
-          <h2>Add Account</h2>
-          <label className="field">
-            <span>Provider</span>
-            <select
-              value={formState.provider}
-              onChange={(event: ChangeEvent<HTMLSelectElement>) =>
-                handleInputChange("provider", event.target.value as Provider)
-              }
-            >
-              {Object.entries(providerLabels).map(([key, label]) => (
-                <option key={key} value={key}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field">
-            <span>Email address</span>
-            <input
-              type="email"
-              autoComplete="username"
-              placeholder="your.email@example.com"
-              value={formState.email}
-              onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                handleInputChange("email", event.target.value)
-              }
-            />
-          </label>
-          <label className="field">
-            <span>Password</span>
-            <input
-              type="password"
-              autoComplete="current-password"
-              placeholder="App password or server password"
-              value={formState.password}
-              onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                handleInputChange("password", event.target.value)
-              }
-            />
-            <small className="hint">
-              For Yahoo: Generate via Account Security → Manage app passwords → Mail
-            </small>
-          </label>
-          <label className="field">
-            <span>Custom IMAP Host (optional)</span>
-            <input
-              type="text"
-              placeholder="e.g., imap.example.com"
-              value={formState.customHost || ""}
-              onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                handleInputChange("customHost", event.target.value)
-              }
-            />
-          </label>
-          <label className="field">
-            <span>Custom IMAP Port (optional)</span>
-            <input
-              type="number"
-              placeholder="993"
-              value={formState.customPort || "993"}
-              onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                handleInputChange("customPort", event.target.value)
-              }
-            />
-          </label>
-          <button
-            type="button"
-            className="primary"
-            onClick={submitConnect}
-            disabled={isSubmitting || !formState.email || !formState.password}
-          >
-            {isSubmitting ? "Connecting..." : "Connect"}
-          </button>
+        <AccountForm
+          formState={formState}
+          onFormStateChange={handleInputChange}
+          onConnect={submitConnect}
+          onPrefill={prefillSavedAccount}
+          onConnectSaved={connectSavedAccount}
+          savedAccounts={savedAccounts}
+          isLoadingSavedAccounts={isLoadingSavedAccounts}
+          onLoadSavedAccounts={loadSavedAccounts}
+          isSubmitting={isSubmitting}
+          prefillingSavedEmail={prefillingSavedEmail}
+          connectingSavedEmail={connectingSavedEmail}
+        />          <AccountList
+            accounts={accounts}
+            selectedAccount={selectedAccount}
+            onSelectAccount={setSelectedAccount}
+            onDisconnect={disconnectAccount}
+            removingAccount={removingAccount}
+          />
+        </Box>
 
-          <div className="saved-accounts">
-            <div className="saved-accounts-header">
-              <h3>Saved on this Mac</h3>
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={() => loadSavedAccounts()}
-                disabled={isLoadingSavedAccounts}
-              >
-                {isLoadingSavedAccounts ? "Refreshing..." : "Refresh"}
-              </button>
-            </div>
-            {isLoadingSavedAccounts ? (
-              <p className="muted">Loading saved accounts...</p>
-            ) : savedAccounts.length === 0 ? (
-              <p className="muted">
-                Saved accounts appear after you connect once and grant keychain access.
-              </p>
-            ) : (
-              <ul className="saved-account-list">
-                {savedAccounts.map((saved) => (
-                  <li key={saved.email} className="saved-account-row">
-                    <div className="saved-account-details">
-                      <span className="provider">{providerLabels[saved.provider]}</span>
-                      <span className="saved-account-email">{saved.email}</span>
-                      {!saved.has_password && (
-                        <span className="badge warning">Password needed</span>
-                      )}
-                    </div>
-                    <div className="saved-account-actions">
-                      <button
-                        type="button"
-                        className="ghost-button"
-                        onClick={() => prefillSavedAccount(saved)}
-                        disabled={
-                          prefillingSavedEmail === saved.email ||
-                          connectingSavedEmail === saved.email
-                        }
-                      >
-                        {prefillingSavedEmail === saved.email ? "Filling..." : "Fill form"}
-                      </button>
-                      <button
-                        type="button"
-                        className="primary"
-                        onClick={() => connectSavedAccount(saved)}
-                        disabled={
-                          !saved.has_password || connectingSavedEmail === saved.email
-                        }
-                      >
-                        {connectingSavedEmail === saved.email ? "Connecting..." : "Connect"}
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </section>
-
-        <section className="card">
-          <h2>Connected accounts</h2>
-          {accounts.length === 0 ? (
-            <p className="empty">No accounts connected yet.</p>
-          ) : (
-            <ul className="account-list">
-              {accounts.map((account) => (
-                <li key={account.email} className="account-row">
-                  <button
-                    type="button"
-                    className={
-                      account.email === selectedAccount ? "link active" : "link"
-                    }
-                    onClick={() => setSelectedAccount(account.email)}
-                  >
-                    <span className="provider">{providerLabels[account.provider]}</span>
-                    <span>{account.email}</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      disconnectAccount(account.email);
-                    }}
-                    disabled={removingAccount === account.email}
-                    aria-label={`Disconnect ${account.email}`}
-                  >
-                    {removingAccount === account.email ? "…" : "✕"}
-                  </button>
-                </li>
-              ))}
-            </ul>
+        {/* Main Content */}
+        <Box
+          component="main"
+          sx={{
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden'
+          }}
+          ref={emailListRef}
+        >
+          {/* Alerts */}
+          {error && (
+            <Alert severity="error" sx={{ mb: 2 }} icon={<ErrorIcon />}>
+              {error}
+            </Alert>
           )}
-        </section>
-      </aside>
+          {info && (
+            <Alert severity="info" sx={{ mb: 2 }} icon={<InfoIcon />}>
+              {info}
+            </Alert>
+          )}
 
-      <main className="content" ref={emailListRef}>
-        {error && <div className="alert error">{error}</div>}
-        {info && <div className="alert info">{info}</div>}
-
-        {selectedAccount ? (
-          <div className="mailbox">
-            <header className="mailbox-header">
-              <div>
-                <h2>{selectedAccount}</h2>
-                <p className="mailbox-subtitle">
-                  Connected via {providerLabels[accounts.find((acct) => acct.email === selectedAccount)?.provider ?? ACCOUNT_PROVIDER]}
-                </p>
-              </div>
-              <div className="mailbox-actions">
-                <button type="button" className="link" onClick={refreshEmails}>
-                  Refresh recent
-                </button>
-                <button
-                  type="button"
-                  className="link"
-                  onClick={handleFullSync}
-                  disabled={isSyncing}
-                >
-                  {isSyncing ? "Syncing…" : "Full sync"}
-                </button>
-              </div>
-            </header>
-
-            <div className="mailbox-stats" role="status" aria-live="polite">
-              <span>
-                <strong>{currentEmails.length.toLocaleString()}</strong>
-                {totalCachedCount > currentEmails.length
-                  ? ` of ${totalCachedCount.toLocaleString()}`
-                  : ""}{" "}
-                cached message{totalCachedCount === 1 ? "" : "s"}
-              </span>
-              {syncReport ? (
-                <span>
-                  Last full sync stored <strong>{syncReport.stored.toLocaleString()}</strong>
-                  {" • "}
-                  fetched {syncReport.fetched.toLocaleString()}
-                </span>
-              ) : null}
-              {syncProgress && syncProgress.total_batches > 0 ? (
-                <span>
-                  Batch {syncProgress.batch}/{syncProgress.total_batches} (
-                  {syncProgress.fetched.toLocaleString()} fetched)
-                </span>
-              ) : null}
-            </div>
-
-            {syncProgress && syncProgress.total_batches > 0 ? (
-              <div className="sync-progress-bar" aria-hidden="true">
-                <div
-                  className="sync-progress-value"
-                  style={{ width: `${Math.min(100, Math.round((syncProgress.batch / syncProgress.total_batches) * 100))}%` }}
-                />
-              </div>
-            ) : null}
-
-            <nav className="tab-bar" aria-label="Mailbox views">
-              {tabs.map((tab) => (
-                <button
-                  key={tab.key}
-                  type="button"
-                  className={clsx("tab", { active: activeTab === tab.key })}
-                  onClick={() => setActiveTab(tab.key)}
-                >
-                  <span>{tab.label}</span>
-                  <small>{tab.description}</small>
-                </button>
-              ))}
-            </nav>
-
-            <section className="tab-panel" aria-live="polite">
-              {activeTab === "recent" && (
-                <div className="tab-content">
-                  {currentEmails.length === 0 ? (
-                    <p className="empty">No messages in the last fetch window.</p>
-                  ) : (
-                    <ul className="email-list">
-                      {currentEmails.map((email) => (
-                        <li key={email.uid}>
-                          <div className="email-subject">{email.subject || "(No subject)"}</div>
-                          <div className="email-meta">
-                            <span>{email.sender.display_name ?? email.sender.email}</span>
-                            {email.date && <span>{formatDate(email.date)}</span>}
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              )}
-
-              {activeTab === "senders" && (
-                <div className="tab-content">
-                  {isLoadingGroups ? (
-                    <p className="empty">Loading sender groups…</p>
-                  ) : currentSenderGroups.length === 0 ? (
-                    <p className="empty">No cached messages yet. Try a full sync.</p>
-                  ) : (
-                    <div className="ag-theme-alpine" style={{ height: '600px', width: '100%' }}>
-                      <AgGridReact
-                        rowData={currentSenderGroups}
-                        columnDefs={columnDefs as any}
-                        defaultColDef={defaultColDef}
-                        masterDetail={true}
-                        detailRowHeight={300}
-                        detailCellRenderer={(props: any) => {
-                          const group = props.data;
-                          return (
-                            <div className="message-list" style={{ padding: '10px' }}>
-                              {group.messages.map((message: any) => {
-                                const deleteKey = `${group.sender_email}::${message.uid}`;
-                                return (
-                                  <article key={message.uid} className="message-card">
-                                    <header>
-                                      <h4>{message.subject || "(No subject)"}</h4>
-                                      <span className="message-date">{formatDate(message.date)}</span>
-                                    </header>
-                                    {message.analysis_sentiment && (
-                                      <span className={clsx("sentiment", message.analysis_sentiment)}>
-                                        Sentiment: {message.analysis_sentiment}
-                                      </span>
-                                    )}
-                                    <p className="message-snippet">
-                                      {message.analysis_summary ?? message.snippet ?? "No preview available."}
-                                    </p>
-                                    {message.analysis_categories.length > 0 && (
-                                      <div className="category-row">
-                                        {message.analysis_categories.map((category: string) => (
-                                          <span key={category} className="category-chip">
-                                            {category}
-                                          </span>
-                                        ))}
-                                      </div>
-                                    )}
-                                    <footer className="message-actions">
-                                      {message.flags && <span className="flags">Flags: {message.flags}</span>}
-                                      <button
-                                        type="button"
-                                        className="outline"
-                                        onClick={() => handleDeleteMessage(group.sender_email, message.uid)}
-                                        disabled={pendingDeleteUid === deleteKey}
-                                      >
-                                        {pendingDeleteUid === deleteKey ? "Deleting…" : "Delete"}
-                                      </button>
-                                    </footer>
-                                  </article>
-                                );
-                              })}
-                            </div>
-                          );
-                        }}
-                        onRowGroupOpened={(event) => {
-                          // Handle expansion state
-                          if (event.expanded && event.data) {
-                            setExpandedSenders((prev) => ({
-                              ...prev,
-                              [selectedAccount!]: event.data!.sender_email
-                            }));
-                          } else {
-                            setExpandedSenders((prev) => ({
-                              ...prev,
-                              [selectedAccount!]: null
-                            }));
-                          }
-                        }}
-                        getRowId={(params) => params.data.sender_email}
-                        animateRows={false}
-                        suppressRowClickSelection={true}
-                        suppressCellFocus={true}
-                      />
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {activeTab === "automation" && (
-                <div className="tab-content automation-grid">
-                  <div className="automation-card">
-                    <h3>Periodic sync</h3>
-                    <p>Keep this mailbox fresh by syncing on a schedule.</p>
-                    <label className="field inline">
-                      <span>Interval (minutes)</span>
-                      <input
-                        type="number"
-                        min={0}
-                        step={5}
-                        value={periodicMinutes}
-                        onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                          handlePeriodicMinutesChange(Number(event.target.value) || 0)
-                        }
-                      />
-                    </label>
-                    <button
-                      type="button"
-                      className="primary"
-                      onClick={handleSavePeriodicSync}
-                      disabled={isSavingPeriodic}
-                    >
-                      {isSavingPeriodic ? "Saving…" : periodicMinutes > 0 ? "Enable" : "Disable"}
-                    </button>
-                    <small className="hint">
-                      Set to 0 to turn off periodic syncing.
-                    </small>
-                  </div>
-
-                  <div className="automation-card">
-                    <h3>Blocked sender filter</h3>
-                    <p>Move messages from blocked senders to a safer folder.</p>
-                    <label className="field inline">
-                      <span>Target folder</span>
-                      <input
-                        type="text"
-                        value={blockFolder}
-                        onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                          setBlockFolder(event.target.value)
-                        }
-                      />
-                    </label>
-                    <button
-                      type="button"
-                      className="primary"
-                      onClick={handleApplyBlockFilter}
-                      disabled={isApplyingBlockFilter}
-                    >
-                      {isApplyingBlockFilter ? "Applying…" : "Apply filter"}
-                    </button>
-                    <small className="hint">
-                      Leave blank to use the provider default "Blocked" folder.
-                    </small>
-                  </div>
-
-                  <div className="automation-card">
-                    <h3>Last full sync</h3>
-                    {syncReport ? (
-                      <ul className="sync-report">
-                        <li>
-                          <strong>Fetched:</strong> {syncReport.fetched}
-                        </li>
-                        <li>
-                          <strong>Stored:</strong> {syncReport.stored}
-                        </li>
-                        <li>
-                          <strong>Duration:</strong> {(syncReport.duration_ms / 1000).toFixed(1)}s
-                        </li>
-                      </ul>
-                    ) : (
-                      <p>No full sync run in this session yet.</p>
-                    )}
-                    <button
-                      type="button"
-                      className="outline"
-                      onClick={handleFullSync}
-                      disabled={isSyncing}
-                    >
-                      {isSyncing ? "Syncing…" : "Run full sync"}
-                    </button>
-                  </div>
-                </div>
-              )}
-            </section>
-          </div>
-        ) : (
-          <div className="placeholder">
-            <h2>Welcome!</h2>
-            <p>Connect a Yahoo account using an app password to begin syncing.</p>
-          </div>
-        )}
-      </main>
-    </div>
+          {selectedAccount ? (
+            <Mailbox
+              selectedAccount={selectedAccount}
+              accounts={accounts}
+              emails={currentEmails}
+              senderGroups={currentSenderGroups}
+              totalCachedCount={totalCachedCount}
+              syncReport={syncReport}
+              syncProgress={syncProgress}
+              onRefreshEmails={refreshEmails}
+              onFullSync={handleFullSync}
+              isSyncing={isSyncing}
+              expandedSenderForAccount={expandedSenders[selectedAccount] || null}
+              onToggleExpansion={toggleSenderExpansion}
+              onStatusChange={(senderEmail: string, status: string) => handleSenderStatusChange(senderEmail, status as SenderStatus)}
+              statusUpdating={statusUpdating}
+              onDeleteMessage={handleDeleteMessage}
+              pendingDeleteUid={pendingDeleteUid}
+              periodicMinutes={periodicMinutes}
+              onPeriodicMinutesChange={handlePeriodicMinutesChange}
+              onSavePeriodicSync={handleSavePeriodicSync}
+              isSavingPeriodic={isSavingPeriodic}
+              blockFolder={blockFolder}
+              onBlockFolderChange={setBlockFolder}
+              onApplyBlockFilter={handleApplyBlockFilter}
+              isApplyingBlockFilter={isApplyingBlockFilter}
+            />
+          ) : (
+            <Box
+              sx={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                height: '100%',
+                textAlign: 'center'
+              }}
+            >
+              <Typography variant="h4" component="h2" gutterBottom>
+                Welcome!
+              </Typography>
+              <Typography variant="body1" color="text.secondary">
+                Connect a Yahoo account using an app password to begin syncing.
+              </Typography>
+            </Box>
+          )}
+        </Box>
+      </Box>
+    </Container>
   );
 }

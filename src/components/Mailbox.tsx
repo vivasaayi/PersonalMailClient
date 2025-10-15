@@ -1,0 +1,258 @@
+import { useState } from "react";
+import {
+  Box,
+  Typography,
+  Button,
+  Paper,
+  Tabs,
+  Tab,
+  Alert,
+  LinearProgress,
+  Chip
+} from "@mui/material";
+import {
+  Refresh as RefreshIcon,
+  Sync as SyncIcon,
+  Email as EmailIcon,
+  Group as GroupIcon,
+  Settings as SettingsIcon
+} from "@mui/icons-material";
+import type { Account, EmailSummary, SenderGroup, SyncReport, SyncProgress } from "../types";
+import EmailList from "./EmailList";
+import SenderGrid from "./SenderGrid";
+import AutomationPanel from "./AutomationPanel";
+
+type TabKey = "recent" | "senders" | "automation";
+
+const tabs: { key: TabKey; label: string; description: string }[] = [
+  {
+    key: "recent",
+    label: "Recent",
+    description: "Latest messages fetched from the server"
+  },
+  {
+    key: "senders",
+    label: "Senders",
+    description: "Grouped conversations with status controls"
+  },
+  {
+    key: "automation",
+    label: "Automation",
+    description: "Full sync, periodic updates & filters"
+  }
+];
+
+interface MailboxProps {
+  selectedAccount: string;
+  accounts: Account[];
+  emails: EmailSummary[];
+  senderGroups: SenderGroup[];
+  totalCachedCount: number;
+  syncReport: SyncReport | null;
+  syncProgress: SyncProgress | null;
+  onRefreshEmails: () => Promise<void>;
+  onFullSync: () => Promise<void>;
+  isSyncing: boolean;
+  expandedSenderForAccount: string | null;
+  onToggleExpansion: (senderEmail: string) => void;
+  onStatusChange: (senderEmail: string, status: string) => Promise<void>;
+  statusUpdating: string | null;
+  onDeleteMessage: (senderEmail: string, uid: string) => Promise<void>;
+  pendingDeleteUid: string | null;
+  periodicMinutes: number;
+  onPeriodicMinutesChange: (value: number) => void;
+  onSavePeriodicSync: () => Promise<void>;
+  isSavingPeriodic: boolean;
+  blockFolder: string;
+  onBlockFolderChange: (value: string) => void;
+  onApplyBlockFilter: () => Promise<void>;
+  isApplyingBlockFilter: boolean;
+}
+
+export default function Mailbox({
+  selectedAccount,
+  accounts,
+  emails,
+  senderGroups,
+  totalCachedCount,
+  syncReport,
+  syncProgress,
+  onRefreshEmails,
+  onFullSync,
+  isSyncing,
+  expandedSenderForAccount,
+  onToggleExpansion,
+  onStatusChange,
+  statusUpdating,
+  onDeleteMessage,
+  pendingDeleteUid,
+  periodicMinutes,
+  onPeriodicMinutesChange,
+  onSavePeriodicSync,
+  isSavingPeriodic,
+  blockFolder,
+  onBlockFolderChange,
+  onApplyBlockFilter,
+  isApplyingBlockFilter
+}: MailboxProps) {
+  const [activeTab, setActiveTab] = useState<TabKey>("senders");
+
+  const account = accounts.find((acct) => acct.email === selectedAccount);
+  const providerLabel = account ? account.provider : "yahoo";
+
+  const getTabIcon = (tabKey: TabKey) => {
+    switch (tabKey) {
+      case "recent":
+        return <EmailIcon />;
+      case "senders":
+        return <GroupIcon />;
+      case "automation":
+        return <SettingsIcon />;
+      default:
+        return <EmailIcon />;
+    }
+  };
+
+  return (
+    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      {/* Header */}
+      <Paper sx={{ p: 2, mb: 2, backgroundColor: 'custom.mailbox.headerBg' }}>
+        <Box display="flex" justifyContent="space-between" alignItems="center">
+          <Box>
+            <Typography variant="h5" component="h2" gutterBottom>
+              {selectedAccount}
+            </Typography>
+            <Chip
+              label={`Connected via ${providerLabel}`}
+              size="small"
+              color="primary"
+              variant="outlined"
+            />
+          </Box>
+          <Box display="flex" gap={1}>
+            <Button
+              variant="outlined"
+              startIcon={<RefreshIcon />}
+              onClick={onRefreshEmails}
+              size="small"
+            >
+              Refresh recent
+            </Button>
+            <Button
+              variant="contained"
+              startIcon={<SyncIcon />}
+              onClick={onFullSync}
+              disabled={isSyncing}
+              size="small"
+            >
+              {isSyncing ? "Syncing…" : "Full sync"}
+            </Button>
+          </Box>
+        </Box>
+      </Paper>
+
+      {/* Stats */}
+      <Paper sx={{ p: 2, mb: 2 }}>
+        <Box display="flex" flexWrap="wrap" gap={2} alignItems="center">
+          <Chip
+            label={`${emails.length.toLocaleString()}${
+              totalCachedCount > emails.length
+                ? ` of ${totalCachedCount.toLocaleString()}`
+                : ""
+            } cached message${totalCachedCount === 1 ? "" : "s"}`}
+            color="info"
+            variant="outlined"
+          />
+          {syncReport && (
+            <Chip
+              label={`Last sync: ${syncReport.stored.toLocaleString()} stored • ${syncReport.fetched.toLocaleString()} fetched`}
+              color="success"
+              variant="outlined"
+            />
+          )}
+          {syncProgress && syncProgress.total_batches > 0 && (
+            <Chip
+              label={`Batch ${syncProgress.batch}/${syncProgress.total_batches} (${syncProgress.fetched.toLocaleString()} fetched)`}
+              color="warning"
+              variant="outlined"
+            />
+          )}
+        </Box>
+
+        {/* Progress Bar */}
+        {syncProgress && syncProgress.total_batches > 0 && (
+          <Box sx={{ mt: 2 }}>
+            <LinearProgress
+              variant="determinate"
+              value={Math.min(100, Math.round((syncProgress.batch / syncProgress.total_batches) * 100))}
+              sx={{ height: 8, borderRadius: 4 }}
+            />
+          </Box>
+        )}
+      </Paper>
+
+      {/* Tabs */}
+      <Paper sx={{ mb: 2 }}>
+        <Tabs
+          value={activeTab}
+          onChange={(_, newValue) => setActiveTab(newValue)}
+          aria-label="Mailbox views"
+          sx={{
+            '& .MuiTab-root': {
+              minHeight: 64,
+              textTransform: 'none',
+            }
+          }}
+        >
+          {tabs.map((tab) => (
+            <Tab
+              key={tab.key}
+              value={tab.key}
+              icon={getTabIcon(tab.key)}
+              iconPosition="start"
+              label={
+                <Box>
+                  <Typography variant="body1">{tab.label}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {tab.description}
+                  </Typography>
+                </Box>
+              }
+            />
+          ))}
+        </Tabs>
+      </Paper>
+
+      {/* Tab Content */}
+      <Box sx={{ flex: 1, overflow: 'hidden' }}>
+        {activeTab === "recent" && <EmailList emails={emails} />}
+        {activeTab === "senders" && (
+          <SenderGrid
+            senderGroups={senderGroups}
+            expandedSenderForAccount={expandedSenderForAccount}
+            onToggleExpansion={onToggleExpansion}
+            onStatusChange={onStatusChange}
+            statusUpdating={statusUpdating}
+            onDeleteMessage={onDeleteMessage}
+            pendingDeleteUid={pendingDeleteUid}
+          />
+        )}
+        {activeTab === "automation" && (
+          <AutomationPanel
+            periodicMinutes={periodicMinutes}
+            onPeriodicMinutesChange={onPeriodicMinutesChange}
+            onSavePeriodicSync={onSavePeriodicSync}
+            isSavingPeriodic={isSavingPeriodic}
+            blockFolder={blockFolder}
+            onBlockFolderChange={onBlockFolderChange}
+            onApplyBlockFilter={onApplyBlockFilter}
+            isApplyingBlockFilter={isApplyingBlockFilter}
+            syncReport={syncReport}
+            onFullSync={onFullSync}
+            isSyncing={isSyncing}
+          />
+        )}
+      </Box>
+    </Box>
+  );
+}

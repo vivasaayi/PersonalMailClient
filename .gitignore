@@ -13,3 +13,4 @@ src-tauri/tauri.conf.local.*
 # IDEs
 .vscode/
 .idea/
+.tsc-out
