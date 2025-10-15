@@ -3,6 +3,8 @@ import {
   Box,
   Button,
   Chip,
+  Divider,
+  IconButton,
   Paper,
   Typography,
 } from "@mui/material";
@@ -50,6 +52,10 @@ export default function SenderGrid({
   onDeleteMessage,
   pendingDeleteUid
 }: SenderGridProps) {
+  const expandedGroup = expandedSenderForAccount
+    ? senderGroups.find((group) => group.sender_email === expandedSenderForAccount) ?? null
+    : null;
+
   const columns: GridColDef[] = [
     {
       field: 'sender_display',
@@ -211,7 +217,7 @@ export default function SenderGrid({
   };
 
   return (
-    <Box sx={{ height: '100%', width: '100%' }}>
+    <Box sx={{ height: '100%', width: '100%', display: 'flex', flexDirection: 'column' }}>
       {senderGroups.length === 0 ? (
         <Paper sx={{ p: 4, textAlign: 'center' }}>
           <Typography variant="h6" color="text.secondary">
@@ -219,29 +225,78 @@ export default function SenderGrid({
           </Typography>
         </Paper>
       ) : (
-        <DataGrid
-          rows={senderGroups}
-          columns={columns}
-          getRowId={(row) => row.sender_email}
-          pageSizeOptions={[10, 25, 50]}
-          initialState={{
-            pagination: {
-              paginationModel: { pageSize: 10 },
-            },
-          }}
-          getDetailPanelContent={getDetailPanelContent}
-          sx={{
-            border: 0,
-            '& .MuiDataGrid-cell': {
-              borderBottom: '1px solid',
-              borderBottomColor: 'divider',
-            },
-            '& .MuiDataGrid-columnHeaders': {
-              borderBottom: '2px solid',
-              borderBottomColor: 'primary.main',
-            },
-          }}
-        />
+        <>
+          <Box sx={{ flex: 1 }}>
+            <DataGrid
+              rows={senderGroups}
+              columns={columns}
+              getRowId={(row) => row.sender_email}
+              pageSizeOptions={[10, 25, 50]}
+              initialState={{
+                pagination: {
+                  paginationModel: { pageSize: 10 },
+                },
+              }}
+              onRowClick={(params) => onToggleExpansion(params.row.sender_email)}
+              disableRowSelectionOnClick
+              getRowClassName={(params) =>
+                expandedSenderForAccount === params.row.sender_email ? 'expanded-row' : ''
+              }
+              sx={{
+                border: 0,
+                '& .MuiDataGrid-cell': {
+                  borderBottom: '1px solid',
+                  borderBottomColor: 'divider',
+                },
+                '& .MuiDataGrid-columnHeaders': {
+                  borderBottom: '2px solid',
+                  borderBottomColor: 'primary.main',
+                },
+                '& .expanded-row': {
+                  backgroundColor: 'action.hover',
+                  '&:hover': {
+                    backgroundColor: 'action.selected',
+                  },
+                },
+              }}
+            />
+          </Box>
+
+          {/* Detail Panel */}
+          {expandedGroup && (
+            <Paper sx={{ mt: 2, border: '1px solid', borderColor: 'divider' }}>
+              <Box
+                sx={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  px: 2,
+                  pt: 2,
+                }}
+              >
+                <Box>
+                  <Typography variant="h6" sx={{ mb: 0.5 }}>
+                    {expandedGroup.sender_display || expandedGroup.sender_email}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    {expandedGroup.sender_email}
+                  </Typography>
+                </Box>
+                <IconButton
+                  aria-label="collapse details"
+                  onClick={() => onToggleExpansion(expandedGroup.sender_email)}
+                  size="small"
+                >
+                  <ExpandMoreIcon sx={{ transform: 'rotate(180deg)' }} />
+                </IconButton>
+              </Box>
+
+              <Divider sx={{ my: 2 }} />
+
+              {getDetailPanelContent({ row: expandedGroup })}
+            </Paper>
+          )}
+        </>
       )}
     </Box>
   );

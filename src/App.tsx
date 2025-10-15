@@ -32,6 +32,7 @@ import NavigationDrawer from "./components/NavigationDrawer";
 import ConnectionWizard from "./components/ConnectionWizard";
 import Mailbox from "./components/Mailbox";
 import SettingsView from "./components/SettingsView";
+import AutomationView from "./components/AutomationView";
 
 const providerLabels: Record<Provider, string> = {
   gmail: "Gmail",
@@ -785,6 +786,9 @@ export default function App() {
               statusUpdating={statusUpdating}
               onDeleteMessage={handleDeleteMessage}
               pendingDeleteUid={pendingDeleteUid}
+            />
+          ) : currentView === 'automation' && selectedAccount ? (
+            <AutomationView
               periodicMinutes={periodicMinutes}
               onPeriodicMinutesChange={handlePeriodicMinutesChange}
               onSavePeriodicSync={handleSavePeriodicSync}
@@ -793,6 +797,9 @@ export default function App() {
               onBlockFolderChange={setBlockFolder}
               onApplyBlockFilter={handleApplyBlockFilter}
               isApplyingBlockFilter={isApplyingBlockFilter}
+              syncReport={syncReport}
+              onFullSync={handleFullSync}
+              isSyncing={isSyncing}
             />
           ) : currentView === 'settings' ? (
             <SettingsView />

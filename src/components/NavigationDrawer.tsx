@@ -15,10 +15,10 @@ import {
 import {
   Inbox as InboxIcon,
   Settings as SettingsIcon,
-  AccountCircle as AccountIcon,
   Mail as MailIcon,
   Block as BlockIcon,
   Sync as SyncIcon,
+  Tune as TuneIcon,
 } from '@mui/icons-material';
 import type { Account } from '../types';
 
@@ -46,6 +46,12 @@ export default function NavigationDrawer({
       id: 'mailbox',
       label: 'Mailbox',
       icon: <InboxIcon />,
+      disabled: !selectedAccount,
+    },
+    {
+      id: 'automation',
+      label: 'Automation',
+      icon: <TuneIcon />,
       disabled: !selectedAccount,
     },
     {

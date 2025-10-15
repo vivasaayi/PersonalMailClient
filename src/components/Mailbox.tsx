@@ -14,15 +14,13 @@ import {
   Refresh as RefreshIcon,
   Sync as SyncIcon,
   Email as EmailIcon,
-  Group as GroupIcon,
-  Settings as SettingsIcon
+  Group as GroupIcon
 } from "@mui/icons-material";
 import type { Account, EmailSummary, SenderGroup, SyncReport, SyncProgress } from "../types";
 import EmailList from "./EmailList";
 import SenderGrid from "./SenderGrid";
-import AutomationPanel from "./AutomationPanel";
 
-type TabKey = "recent" | "senders" | "automation";
+type TabKey = "recent" | "senders";
 
 const tabs: { key: TabKey; label: string; description: string }[] = [
   {
@@ -34,11 +32,6 @@ const tabs: { key: TabKey; label: string; description: string }[] = [
     key: "senders",
     label: "Senders",
     description: "Grouped conversations with status controls"
-  },
-  {
-    key: "automation",
-    label: "Automation",
-    description: "Full sync, periodic updates & filters"
   }
 ];
 
@@ -59,14 +52,6 @@ interface MailboxProps {
   statusUpdating: string | null;
   onDeleteMessage: (senderEmail: string, uid: string) => Promise<void>;
   pendingDeleteUid: string | null;
-  periodicMinutes: number;
-  onPeriodicMinutesChange: (value: number) => void;
-  onSavePeriodicSync: () => Promise<void>;
-  isSavingPeriodic: boolean;
-  blockFolder: string;
-  onBlockFolderChange: (value: string) => void;
-  onApplyBlockFilter: () => Promise<void>;
-  isApplyingBlockFilter: boolean;
 }
 
 export default function Mailbox({
@@ -85,15 +70,7 @@ export default function Mailbox({
   onStatusChange,
   statusUpdating,
   onDeleteMessage,
-  pendingDeleteUid,
-  periodicMinutes,
-  onPeriodicMinutesChange,
-  onSavePeriodicSync,
-  isSavingPeriodic,
-  blockFolder,
-  onBlockFolderChange,
-  onApplyBlockFilter,
-  isApplyingBlockFilter
+  pendingDeleteUid
 }: MailboxProps) {
   const [activeTab, setActiveTab] = useState<TabKey>("senders");
 
@@ -106,8 +83,6 @@ export default function Mailbox({
         return <EmailIcon />;
       case "senders":
         return <GroupIcon />;
-      case "automation":
-        return <SettingsIcon />;
       default:
         return <EmailIcon />;
     }
@@ -235,21 +210,6 @@ export default function Mailbox({
             statusUpdating={statusUpdating}
             onDeleteMessage={onDeleteMessage}
             pendingDeleteUid={pendingDeleteUid}
-          />
-        )}
-        {activeTab === "automation" && (
-          <AutomationPanel
-            periodicMinutes={periodicMinutes}
-            onPeriodicMinutesChange={onPeriodicMinutesChange}
-            onSavePeriodicSync={onSavePeriodicSync}
-            isSavingPeriodic={isSavingPeriodic}
-            blockFolder={blockFolder}
-            onBlockFolderChange={onBlockFolderChange}
-            onApplyBlockFilter={onApplyBlockFilter}
-            isApplyingBlockFilter={isApplyingBlockFilter}
-            syncReport={syncReport}
-            onFullSync={onFullSync}
-            isSyncing={isSyncing}
           />
         )}
       </Box>
