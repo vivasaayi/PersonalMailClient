@@ -1,15 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
 import { appWindow } from "@tauri-apps/api/window";
-import clsx from "clsx";
-import dayjs from "dayjs";
 import {
   Box,
   Alert,
   Typography,
-  Container
+  AppBar,
+  Toolbar,
+  IconButton,
+  Fab,
+  Button,
 } from "@mui/material";
+import {
+  Menu as MenuIcon,
+  Add as AddIcon,
+} from "@mui/icons-material";
 import { Error as ErrorIcon, Info as InfoIcon } from "@mui/icons-material";
 
 import type {
@@ -23,9 +28,10 @@ import type {
   SyncProgress,
   SyncReport
 } from "./types";
-import AccountForm from "./components/AccountForm";
-import AccountList from "./components/AccountList";
+import NavigationDrawer from "./components/NavigationDrawer";
+import ConnectionWizard from "./components/ConnectionWizard";
 import Mailbox from "./components/Mailbox";
+import SettingsView from "./components/SettingsView";
 
 const providerLabels: Record<Provider, string> = {
   gmail: "Gmail",
@@ -37,26 +43,7 @@ const providerLabels: Record<Provider, string> = {
 const MIN_CACHE_FETCH = 1_000;
 const MAX_CACHE_FETCH = 50_000;
 
-const ACCOUNT_PROVIDER: Provider = "yahoo";
-
-interface AccountFormState {
-  provider: Provider;
-  email: string;
-  password: string;
-  customHost?: string;
-  customPort?: string;
-}
-
-const initialFormState: AccountFormState = {
-  provider: ACCOUNT_PROVIDER,
-  email: "",
-  password: "",
-  customHost: "",
-  customPort: "993"
-};
-
 export default function App() {
-  const [formState, setFormState] = useState<AccountFormState>(initialFormState);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null);
   const [emailsByAccount, setEmailsByAccount] = useState<Record<string, EmailSummary[]>>({});
@@ -64,12 +51,9 @@ export default function App() {
   const [senderGroupsByAccount, setSenderGroupsByAccount] = useState<Record<string, SenderGroup[]>>({});
   const [savedAccounts, setSavedAccounts] = useState<SavedAccount[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isLoadingSavedAccounts, setIsLoadingSavedAccounts] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [isLoadingGroups, setIsLoadingGroups] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
-  const [removingAccount, setRemovingAccount] = useState<string | null>(null);
   const [expandedSenders, setExpandedSenders] = useState<Record<string, string | null>>({});
   const [statusUpdating, setStatusUpdating] = useState<string | null>(null);
   const [pendingDeleteUid, setPendingDeleteUid] = useState<string | null>(null);
@@ -80,10 +64,14 @@ export default function App() {
   const [isApplyingBlockFilter, setIsApplyingBlockFilter] = useState(false);
   const [blockFolder, setBlockFolder] = useState<string>("Blocked");
   const [connectingSavedEmail, setConnectingSavedEmail] = useState<string | null>(null);
-  const [prefillingSavedEmail, setPrefillingSavedEmail] = useState<string | null>(null);
   const maxCachedItemsByAccount = useRef<Record<string, number>>({});
   const cachedCountRef = useRef<Record<string, number>>({});
   const emailListRef = useRef<HTMLElement>(null);
+
+  // Navigation state
+  const [drawerOpen, setDrawerOpen] = useState(true);
+  const [currentView, setCurrentView] = useState<string>('mailbox');
+  const [connectionWizardOpen, setConnectionWizardOpen] = useState(false);
 
   const currentEmails = useMemo(() => {
     if (!selectedAccount) {
@@ -174,15 +162,12 @@ export default function App() {
   );
 
   const loadSavedAccounts = useCallback(async () => {
-    setIsLoadingSavedAccounts(true);
     try {
       const saved = await invoke<SavedAccount[]>("list_saved_accounts");
       setSavedAccounts(saved);
     } catch (err) {
       console.error(err);
       setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setIsLoadingSavedAccounts(false);
     }
   }, []);
 
@@ -237,10 +222,6 @@ export default function App() {
     };
   }, [selectedAccount, loadCachedEmails]);
 
-  const expandedSenderForAccount = selectedAccount
-    ? expandedSenders[selectedAccount] ?? null
-    : null;
-
   const periodicMinutes = selectedAccount
     ? periodicMinutesByAccount[selectedAccount] ?? 0
     : 0;
@@ -251,16 +232,8 @@ export default function App() {
     ? cachedCountsByAccount[selectedAccount] ?? currentEmails.length
     : currentEmails.length;
 
-  const handleInputChange = (key: keyof AccountFormState, value: string) => {
-    setFormState((prev: AccountFormState) => ({ ...prev, [key]: value }));
-  };
-
   const loadSenderGroups = useCallback(
-    async (accountEmail: string, options: { showLoading?: boolean } = {}) => {
-      const { showLoading = true } = options;
-      if (showLoading) {
-        setIsLoadingGroups(true);
-      }
+    async (accountEmail: string) => {
       try {
         const groups = await invoke<SenderGroup[]>("list_sender_groups", {
           email: accountEmail
@@ -315,10 +288,6 @@ export default function App() {
       } catch (err) {
         console.error(err);
         setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        if (showLoading) {
-          setIsLoadingGroups(false);
-        }
       }
     },
     [expandedSenders]
@@ -356,7 +325,7 @@ export default function App() {
         const existingCount = maxCachedItemsByAccount.current[account.email] ?? 0;
         const fetchLimit = Math.max(limit, existingCount, MIN_CACHE_FETCH);
         await loadCachedEmails(account.email, fetchLimit);
-        await loadSenderGroups(account.email, { showLoading: showToast });
+        await loadSenderGroups(account.email);
         await loadCachedCount(account.email);
       } catch (err) {
         console.error(err);
@@ -412,36 +381,7 @@ export default function App() {
     return () => clearInterval(interval);
   }, [selectedAccount, refreshEmailsForAccount]);
 
-  const submitConnect = async () => {
-    setError(null);
-    setInfo(null);
-    setIsSubmitting(true);
-    try {
-      const payload = await invoke<ConnectAccountResponse>("connect_account", {
-        provider: formState.provider,
-        email: formState.email,
-        password: formState.password,
-        customHost: formState.customHost || undefined,
-        customPort: formState.customPort ? parseInt(formState.customPort) : undefined
-      });
-      await applyConnectResponse(payload);
-      await loadSavedAccounts();
-      setInfo(`Connected to ${providerLabels[payload.account.provider]} as ${payload.account.email}`);
-      setFormState(initialFormState);
-    } catch (err) {
-      console.error(err);
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
   const connectSavedAccount = async (saved: SavedAccount) => {
-    if (!saved.has_password) {
-      await prefillSavedAccount(saved);
-      return;
-    }
-
     setError(null);
     setInfo(null);
     setConnectingSavedEmail(saved.email);
@@ -461,115 +401,11 @@ export default function App() {
     }
   };
 
-  const prefillSavedAccount = async (saved: SavedAccount) => {
-    setError(null);
-    setInfo(null);
-    setPrefillingSavedEmail(saved.email);
-    try {
-      let password = "";
-      let message: string | null = null;
-      if (saved.has_password) {
-        const fetched = await invoke<string | null>("get_saved_password", {
-          email: saved.email
-        });
-        if (fetched) {
-          password = fetched;
-          message = "Loaded password from macOS keychain. Review and connect.";
-        } else {
-          message = "No password found in macOS keychain. Enter it to reconnect.";
-        }
-      } else {
-        message = "Password isn't stored for this account. Enter it to reconnect.";
-      }
-
-      setFormState({
-        provider: saved.provider,
-        email: saved.email,
-        password,
-        customHost: saved.custom_host ?? "",
-        customPort:
-          saved.custom_port != null
-            ? String(saved.custom_port)
-            : saved.provider === "custom"
-            ? ""
-            : initialFormState.customPort
-      });
-
-      if (message) {
-        setInfo(message);
-      }
-    } catch (err) {
-      console.error(err);
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setPrefillingSavedEmail(null);
-    }
-  };
-
   const refreshEmails = async () => {
     if (!selectedAccount) {
       return;
     }
     await refreshEmailsForAccount(selectedAccount);
-  };
-
-  const disconnectAccount = async (email: string) => {
-    setError(null);
-    setInfo(null);
-    setRemovingAccount(email);
-    try {
-      await invoke("disconnect_account", { email });
-      setAccounts((prev: Account[]) => {
-        const next = prev.filter((acct: Account) => acct.email !== email);
-        if (selectedAccount === email) {
-          setSelectedAccount(next[0]?.email ?? null);
-        }
-        return next;
-      });
-      setEmailsByAccount((prev: Record<string, EmailSummary[]>) => {
-        const next = { ...prev };
-        delete next[email];
-        return next;
-      });
-
-      setSenderGroupsByAccount((prev: Record<string, SenderGroup[]>) => {
-        const next = { ...prev };
-        delete next[email];
-        return next;
-      });
-
-      setExpandedSenders((prev: Record<string, string | null>) => {
-        const next = { ...prev };
-        delete next[email];
-        return next;
-      });
-
-      delete maxCachedItemsByAccount.current[email];
-      const nextCountMap = { ...cachedCountRef.current };
-      delete nextCountMap[email];
-      cachedCountRef.current = nextCountMap;
-      setCachedCountsByAccount(nextCountMap);
-
-      setSyncReports((prev: Record<string, SyncReport | null>) => {
-        const next = { ...prev };
-        delete next[email];
-        return next;
-      });
-
-      setPeriodicMinutesByAccount((prev: Record<string, number>) => {
-        const next = { ...prev };
-        delete next[email];
-        return next;
-      });
-
-      await loadSavedAccounts();
-      setInfo(`Disconnected ${email}.`);
-    } catch (err) {
-      console.error(err);
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRemovingAccount(null);
-    }
   };
 
   const handleFullSync = async () => {
@@ -615,7 +451,7 @@ export default function App() {
         MIN_CACHE_FETCH
       );
       await loadCachedEmails(account.email, fetchLimit);
-      await loadSenderGroups(account.email, { showLoading: false });
+      await loadSenderGroups(account.email);
     } catch (err) {
       console.error(err);
       setError(err instanceof Error ? err.message : String(err));
@@ -791,6 +627,23 @@ export default function App() {
     }
   };
 
+  // Navigation handlers
+  const handleDrawerToggle = () => {
+    setDrawerOpen(!drawerOpen);
+  };
+
+  const handleNavigate = (view: string) => {
+    setCurrentView(view);
+  };
+
+  const handleOpenConnectionWizard = () => {
+    setConnectionWizardOpen(true);
+  };
+
+  const handleCloseConnectionWizard = () => {
+    setConnectionWizardOpen(false);
+  };
+
   useEffect(() => {
     if (!selectedAccount) {
       return;
@@ -812,9 +665,7 @@ export default function App() {
 
         await loadCachedEmails(selectedAccount, initialFetchLimit);
         if (cancelled) return;
-        await loadSenderGroups(selectedAccount, {
-          showLoading: (senderGroupsByAccount[selectedAccount]?.length ?? 0) === 0
-        });
+        await loadSenderGroups(selectedAccount);
         if (cancelled) return;
         await refreshEmailsForAccount(selectedAccount, initialFetchLimit, false);
       } catch (err) {
@@ -842,81 +693,81 @@ export default function App() {
     });
   };
 
-  const formatDate = (value?: string | null) => {
-    if (!value) {
-      return "";
-    }
-    return dayjs(value).format("MMM D, YYYY h:mm A");
-  };
-
   return (
-    <Container maxWidth={false} sx={{ height: '100vh', py: 2 }}>
-      <Box display="flex" gap={3} height="100%">
-        {/* Sidebar */}
-        <Box
-          component="aside"
+    <Box sx={{ display: 'flex', height: '100vh' }}>
+      {/* Navigation Drawer */}
+      <NavigationDrawer
+        open={drawerOpen}
+        accounts={accounts}
+        selectedAccount={selectedAccount}
+        onAccountSelect={setSelectedAccount}
+        onNavigate={handleNavigate}
+        currentView={currentView}
+      />
+
+      {/* Main Content */}
+      <Box
+        component="main"
+        sx={{
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden'
+        }}
+      >
+        {/* App Bar */}
+        <AppBar
+          position="static"
+          elevation={1}
           sx={{
-            width: 360,
-            flexShrink: 0,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 2
+            zIndex: (theme) => theme.zIndex.drawer + 1,
+            backgroundColor: 'background.paper',
+            color: 'text.primary',
+            borderBottom: '1px solid',
+            borderBottomColor: 'divider'
           }}
         >
-          <Box sx={{ mb: 2 }}>
-            <Typography variant="h4" component="h1" gutterBottom>
-              Yahoo Mail Client
+          <Toolbar>
+            <IconButton
+              color="inherit"
+              aria-label="toggle drawer"
+              onClick={handleDrawerToggle}
+              edge="start"
+              sx={{ mr: 2 }}
+            >
+              <MenuIcon />
+            </IconButton>
+            <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
+              Personal Mail Client
             </Typography>
-            <Typography variant="body2" color="text.secondary">
-              Connect using Yahoo app passwords over TLS.
-            </Typography>
-          </Box>
+          </Toolbar>
+        </AppBar>
 
-        <AccountForm
-          formState={formState}
-          onFormStateChange={handleInputChange}
-          onConnect={submitConnect}
-          onPrefill={prefillSavedAccount}
-          onConnectSaved={connectSavedAccount}
-          savedAccounts={savedAccounts}
-          isLoadingSavedAccounts={isLoadingSavedAccounts}
-          onLoadSavedAccounts={loadSavedAccounts}
-          isSubmitting={isSubmitting}
-          prefillingSavedEmail={prefillingSavedEmail}
-          connectingSavedEmail={connectingSavedEmail}
-        />          <AccountList
-            accounts={accounts}
-            selectedAccount={selectedAccount}
-            onSelectAccount={setSelectedAccount}
-            onDisconnect={disconnectAccount}
-            removingAccount={removingAccount}
-          />
-        </Box>
-
-        {/* Main Content */}
+        {/* Content Area */}
         <Box
-          component="main"
           sx={{
             flex: 1,
             display: 'flex',
             flexDirection: 'column',
-            overflow: 'hidden'
+            overflow: 'auto',
+            p: 0
           }}
           ref={emailListRef}
         >
           {/* Alerts */}
           {error && (
-            <Alert severity="error" sx={{ mb: 2 }} icon={<ErrorIcon />}>
+            <Alert severity="error" sx={{ m: 2 }} icon={<ErrorIcon />}>
               {error}
             </Alert>
           )}
           {info && (
-            <Alert severity="info" sx={{ mb: 2 }} icon={<InfoIcon />}>
+            <Alert severity="info" sx={{ m: 2, mt: 0 }} icon={<InfoIcon />}>
               {info}
             </Alert>
           )}
 
-          {selectedAccount ? (
+          {/* View Content */}
+          {currentView === 'mailbox' && selectedAccount ? (
             <Mailbox
               selectedAccount={selectedAccount}
               accounts={accounts}
@@ -943,6 +794,26 @@ export default function App() {
               onApplyBlockFilter={handleApplyBlockFilter}
               isApplyingBlockFilter={isApplyingBlockFilter}
             />
+          ) : currentView === 'settings' ? (
+            <SettingsView />
+          ) : currentView === 'sync' && selectedAccount ? (
+            <Box sx={{ p: 3 }}>
+              <Typography variant="h5" gutterBottom>
+                Sync Settings for {selectedAccount}
+              </Typography>
+              <Typography variant="body1" color="text.secondary">
+                Sync configuration will be implemented here.
+              </Typography>
+            </Box>
+          ) : currentView === 'blocked' && selectedAccount ? (
+            <Box sx={{ p: 3 }}>
+              <Typography variant="h5" gutterBottom>
+                Blocked Senders for {selectedAccount}
+              </Typography>
+              <Typography variant="body1" color="text.secondary">
+                Blocked senders management will be implemented here.
+              </Typography>
+            </Box>
           ) : (
             <Box
               sx={{
@@ -955,15 +826,71 @@ export default function App() {
               }}
             >
               <Typography variant="h4" component="h2" gutterBottom>
-                Welcome!
+                Welcome to Personal Mail Client
               </Typography>
-              <Typography variant="body1" color="text.secondary">
-                Connect a Yahoo account using an app password to begin syncing.
+              <Typography variant="body1" color="text.secondary" sx={{ mb: 4 }}>
+                Connect an email account to get started with professional email management.
               </Typography>
+              <Button
+                variant="contained"
+                size="large"
+                startIcon={<AddIcon />}
+                onClick={handleOpenConnectionWizard}
+              >
+                Connect Account
+              </Button>
             </Box>
           )}
         </Box>
       </Box>
-    </Container>
+
+      {/* Floating Action Button for Quick Connect */}
+      <Fab
+        color="primary"
+        aria-label="connect account"
+        sx={{
+          position: 'fixed',
+          bottom: 24,
+          right: 24,
+          zIndex: 1000
+        }}
+        onClick={handleOpenConnectionWizard}
+      >
+        <AddIcon />
+      </Fab>
+
+      {/* Connection Wizard Dialog */}
+      <ConnectionWizard
+        open={connectionWizardOpen}
+        onClose={handleCloseConnectionWizard}
+        onConnect={async (formData) => {
+          setError(null);
+          setInfo(null);
+          setIsSubmitting(true);
+          try {
+            const payload = await invoke<ConnectAccountResponse>("connect_account", {
+              provider: formData.provider,
+              email: formData.email,
+              password: formData.password,
+              customHost: formData.customHost || undefined,
+              customPort: formData.customPort ? formData.customPort : undefined
+            });
+            await applyConnectResponse(payload);
+            await loadSavedAccounts();
+            setInfo(`Connected to ${providerLabels[payload.account.provider]} as ${payload.account.email}`);
+          } catch (err) {
+            console.error(err);
+            setError(err instanceof Error ? err.message : String(err));
+          } finally {
+            setIsSubmitting(false);
+          }
+        }}
+        onConnectSaved={connectSavedAccount}
+        savedAccounts={savedAccounts}
+        isSubmitting={isSubmitting}
+        prefillingSavedEmail={null}
+        connectingSavedEmail={connectingSavedEmail}
+      />
+    </Box>
   );
 }

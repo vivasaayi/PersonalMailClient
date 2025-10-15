@@ -18,8 +18,6 @@
     "@mui/material": "^7.3.4",
     "@mui/x-data-grid": "^8.14.0",
     "@tauri-apps/api": "^1.5.3",
-    "ag-grid-community": "^34.2.0",
-    "ag-grid-react": "^34.2.0",
     "clsx": "^2.1.1",
     "dayjs": "^1.11.11",
     "react": "^18.3.1",
