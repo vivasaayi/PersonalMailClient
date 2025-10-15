@@ -73,21 +73,28 @@ fn keychain_entry(email: &str) -> Result<Entry, String> {
 }
 
 fn store_password_in_keychain(email: &str, password: &str) -> Result<(), String> {
+    // In development, you can use environment variables instead of keychain
+    // Set EMAIL_PASSWORD environment variable to avoid keychain prompts
+    if cfg!(debug_assertions) {
+        info!("Development mode: skipping keychain storage. Use EMAIL_PASSWORD env var instead.");
+        return Ok(());
+    }
+
     let entry = keychain_entry(email)?;
     entry
         .set_password(password)
         .map_err(|err| err.to_string())
 }
 
-fn delete_password_from_keychain(email: &str) -> Result<(), String> {
-    let entry = keychain_entry(email)?;
-    match entry.delete_password() {
-        Ok(_) | Err(KeyringError::NoEntry) => Ok(()),
-        Err(err) => Err(err.to_string()),
-    }
-}
-
 fn fetch_password_from_keychain(email: &str) -> Result<Option<String>, String> {
+    // In development, check environment variable first
+    if cfg!(debug_assertions) {
+        if let Ok(password) = std::env::var("EMAIL_PASSWORD") {
+            info!("Using password from EMAIL_PASSWORD environment variable");
+            return Ok(Some(password));
+        }
+    }
+
     let entry = keychain_entry(email)?;
     match entry.get_password() {
         Ok(password) => Ok(Some(password)),
@@ -97,6 +104,13 @@ fn fetch_password_from_keychain(email: &str) -> Result<Option<String>, String> {
 }
 
 fn password_exists_in_keychain(email: &str) -> Result<bool, String> {
+    // In development, check environment variable first
+    if cfg!(debug_assertions) {
+        if std::env::var("EMAIL_PASSWORD").is_ok() {
+            return Ok(true);
+        }
+    }
+
     let entry = keychain_entry(email)?;
     match entry.get_password() {
         Ok(password) => {
@@ -104,6 +118,20 @@ fn password_exists_in_keychain(email: &str) -> Result<bool, String> {
             Ok(true)
         }
         Err(KeyringError::NoEntry) => Ok(false),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn delete_password_from_keychain(email: &str) -> Result<(), String> {
+    // In development, no keychain entry to delete
+    if cfg!(debug_assertions) {
+        info!("Development mode: no keychain entry to delete");
+        return Ok(());
+    }
+
+    let entry = keychain_entry(email)?;
+    match entry.delete_password() {
+        Ok(_) | Err(KeyringError::NoEntry) => Ok(()),
         Err(err) => Err(err.to_string()),
     }
 }

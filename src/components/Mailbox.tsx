@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Box,
   Typography,
@@ -17,7 +17,7 @@ import {
   Group as GroupIcon
 } from "@mui/icons-material";
 import type { Account, EmailSummary, SenderGroup, SyncReport, SyncProgress } from "../types";
-import EmailList from "./EmailList";
+import EmailList, { type EmailInsightRecord } from "./EmailList";
 import SenderGrid from "./SenderGrid";
 
 type TabKey = "recent" | "senders";
@@ -73,6 +73,20 @@ export default function Mailbox({
   pendingDeleteUid
 }: MailboxProps) {
   const [activeTab, setActiveTab] = useState<TabKey>("senders");
+
+  const messageInsights = useMemo<Record<string, EmailInsightRecord>>(() => {
+    const map: Record<string, EmailInsightRecord> = {};
+    senderGroups.forEach((group) => {
+      group.messages.forEach((message) => {
+        map[message.uid] = {
+          senderEmail: group.sender_email,
+          senderDisplay: group.sender_display,
+          message,
+        };
+      });
+    });
+    return map;
+  }, [senderGroups]);
 
   const account = accounts.find((acct) => acct.email === selectedAccount);
   const providerLabel = account ? account.provider : "yahoo";
@@ -200,7 +214,9 @@ export default function Mailbox({
 
       {/* Tab Content */}
       <Box sx={{ flex: 1, overflow: 'hidden' }}>
-        {activeTab === "recent" && <EmailList emails={emails} />}
+        {activeTab === "recent" && (
+          <EmailList emails={emails} messageInsights={messageInsights} />
+        )}
         {activeTab === "senders" && (
           <SenderGrid
             senderGroups={senderGroups}

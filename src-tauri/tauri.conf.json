@@ -17,7 +17,12 @@
     "bundle": {
       "identifier": "com.personal.mail",
       "active": true,
-      "targets": ["dmg", "app", "msi", "deb", "appimage"]
+      "targets": ["dmg", "app", "msi", "deb", "appimage"],
+      "macOS": {
+        "entitlements": "Entitlements.plist",
+        "frameworks": [],
+        "minimumSystemVersion": "10.15"
+      }
     },
     "security": {
       "csp": null
