@@ -80,8 +80,13 @@ export default function NavigationDrawer({
       anchor="left"
       open={open}
       sx={{
-        width: DRAWER_WIDTH,
+        width: open ? DRAWER_WIDTH : 0,
         flexShrink: 0,
+        transition: (theme) =>
+          theme.transitions.create('width', {
+            easing: theme.transitions.easing.sharp,
+            duration: theme.transitions.duration.shortest,
+          }),
         '& .MuiDrawer-paper': {
           width: DRAWER_WIDTH,
           boxSizing: 'border-box',

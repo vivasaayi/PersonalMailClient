@@ -10,6 +10,7 @@ import {
   IconButton,
   Fab,
   Button,
+  Snackbar,
 } from "@mui/material";
 import {
   Menu as MenuIcon,
@@ -694,6 +695,13 @@ export default function App() {
     });
   };
 
+  const handleInfoClose = (_event?: unknown, reason?: string) => {
+    if (reason === "clickaway") {
+      return;
+    }
+    setInfo(null);
+  };
+
   return (
     <Box sx={{ display: 'flex', height: '100vh' }}>
       {/* Navigation Drawer */}
@@ -761,12 +769,6 @@ export default function App() {
               {error}
             </Alert>
           )}
-          {info && (
-            <Alert severity="info" sx={{ m: 2, mt: 0 }} icon={<InfoIcon />}>
-              {info}
-            </Alert>
-          )}
-
           {/* View Content */}
           {currentView === 'mailbox' && selectedAccount ? (
             <Mailbox
@@ -850,6 +852,23 @@ export default function App() {
           )}
         </Box>
       </Box>
+
+        <Snackbar
+          open={Boolean(info)}
+          autoHideDuration={6000}
+          onClose={handleInfoClose}
+          anchorOrigin={{ vertical: "top", horizontal: "center" }}
+        >
+          <Alert
+            severity="info"
+            icon={<InfoIcon />}
+            variant="filled"
+            onClose={handleInfoClose}
+            sx={{ width: "100%" }}
+          >
+            {info}
+          </Alert>
+        </Snackbar>
 
       {/* Floating Action Button for Quick Connect */}
       <Fab

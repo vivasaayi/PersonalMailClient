@@ -1,16 +1,25 @@
-import { DataGrid, GridColDef, GridRenderCellParams } from "@mui/x-data-grid";
+import { useMemo, useState } from "react";
+import {
+  DataGrid,
+  GridColDef,
+  GridRenderCellParams,
+  GridRowSelectionModel,
+} from "@mui/x-data-grid";
 import {
   Box,
   Button,
+  Card,
+  CardContent,
   Chip,
   Divider,
-  IconButton,
+  Stack,
   Paper,
   Typography,
 } from "@mui/material";
 import {
   ExpandMore as ExpandMoreIcon,
   Delete as DeleteIcon,
+  Group as GroupIcon,
 } from "@mui/icons-material";
 import dayjs from "dayjs";
 import type { SenderGroup, SenderStatus, AnalyzedMessage } from "../types";
@@ -52,47 +61,54 @@ export default function SenderGrid({
   onDeleteMessage,
   pendingDeleteUid
 }: SenderGridProps) {
-  const expandedGroup = expandedSenderForAccount
-    ? senderGroups.find((group) => group.sender_email === expandedSenderForAccount) ?? null
-    : null;
+  const [paginationModel, setPaginationModel] = useState({ page: 0, pageSize: 10 });
 
-  const columns: GridColDef[] = [
+  const expandedGroup = useMemo(() => {
+    if (!expandedSenderForAccount) {
+      return null;
+    }
+    return senderGroups.find((group) => group.sender_email === expandedSenderForAccount) ?? null;
+  }, [expandedSenderForAccount, senderGroups]);
+
+  const selectionModel: GridRowSelectionModel = useMemo(
+    () => ({
+      type: "include" as const,
+      ids: new Set(expandedSenderForAccount ? [expandedSenderForAccount] : []),
+    }),
+    [expandedSenderForAccount]
+  );
+
+  const columns: GridColDef<SenderGroup>[] = [
     {
       field: 'sender_display',
       headerName: 'Sender',
-      width: 300,
+      flex: 1.2,
+      minWidth: 220,
       renderCell: (params: GridRenderCellParams) => (
-        <Box
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 1,
-            cursor: 'pointer',
-            width: '100%'
-          }}
-          onClick={() => onToggleExpansion(params.row.sender_email)}
-        >
+        <Stack direction="row" alignItems="center" spacing={1} sx={{ width: '100%' }}>
           <ExpandMoreIcon
+            fontSize="small"
             sx={{
               transform: expandedSenderForAccount === params.row.sender_email ? 'rotate(0deg)' : 'rotate(-90deg)',
-              transition: 'transform 0.2s'
+              transition: 'transform 0.2s',
             }}
           />
-          <Box>
-            <Typography variant="body2" fontWeight="medium">
-              {params.row.sender_display}
+          <Box sx={{ overflow: 'hidden' }}>
+            <Typography variant="body2" fontWeight={600} noWrap>
+              {params.row.sender_display || params.row.sender_email}
             </Typography>
-            <Typography variant="caption" color="text.secondary">
+            <Typography variant="caption" color="text.secondary" noWrap>
               {params.row.sender_email}
             </Typography>
           </Box>
-        </Box>
+        </Stack>
       ),
     },
     {
       field: 'message_count',
       headerName: 'Messages',
-      width: 120,
+      flex: 0.5,
+      minWidth: 120,
       align: 'center',
       headerAlign: 'center',
       renderCell: (params: GridRenderCellParams) => (
@@ -106,7 +122,8 @@ export default function SenderGrid({
     {
       field: 'status',
       headerName: 'Status',
-      width: 200,
+      flex: 0.9,
+      minWidth: 220,
       align: 'center',
       headerAlign: 'center',
       renderCell: (params: GridRenderCellParams) => {
@@ -219,41 +236,55 @@ export default function SenderGrid({
   return (
     <Box sx={{ height: '100%', width: '100%', display: 'flex', flexDirection: 'column' }}>
       {senderGroups.length === 0 ? (
-        <Paper sx={{ p: 4, textAlign: 'center' }}>
-          <Typography variant="h6" color="text.secondary">
-            No cached messages yet. Try a full sync.
-          </Typography>
-        </Paper>
+        <Card sx={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <CardContent>
+            <Stack spacing={1} alignItems="center" textAlign="center">
+              <GroupIcon fontSize="large" color="disabled" />
+              <Typography variant="h6" color="text.secondary">
+                No cached messages yet
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Run a full sync to populate sender insights.
+              </Typography>
+            </Stack>
+          </CardContent>
+        </Card>
       ) : (
-        <>
-          <Box sx={{ flex: 1 }}>
+        <Box sx={{ display: 'flex', gap: 3, flex: 1, overflow: 'hidden' }}>
+          <Box sx={{ flex: 1, minWidth: 0 }}>
             <DataGrid
               rows={senderGroups}
               columns={columns}
               getRowId={(row) => row.sender_email}
               pageSizeOptions={[10, 25, 50]}
-              initialState={{
-                pagination: {
-                  paginationModel: { pageSize: 10 },
-                },
+              paginationModel={paginationModel}
+              onPaginationModelChange={setPaginationModel}
+              rowSelectionModel={selectionModel}
+              onRowSelectionModelChange={(newSelection) => {
+                const nextId = Array.from(newSelection.ids)[0] as string | undefined;
+                if (!nextId && expandedSenderForAccount) {
+                  onToggleExpansion(expandedSenderForAccount);
+                } else if (nextId) {
+                  onToggleExpansion(nextId);
+                }
               }}
               onRowClick={(params) => onToggleExpansion(params.row.sender_email)}
-              disableRowSelectionOnClick
-              getRowClassName={(params) =>
-                expandedSenderForAccount === params.row.sender_email ? 'expanded-row' : ''
-              }
+              disableColumnMenu
+              density="comfortable"
               sx={{
                 border: 0,
+                height: '100%',
                 '& .MuiDataGrid-cell': {
                   borderBottom: '1px solid',
                   borderBottomColor: 'divider',
                 },
                 '& .MuiDataGrid-columnHeaders': {
-                  borderBottom: '2px solid',
-                  borderBottomColor: 'primary.main',
+                  borderBottom: '1px solid',
+                  borderBottomColor: 'divider',
+                  backgroundColor: 'background.paper',
                 },
-                '& .expanded-row': {
-                  backgroundColor: 'action.hover',
+                '& .MuiDataGrid-row.Mui-selected': {
+                  backgroundColor: 'action.selected',
                   '&:hover': {
                     backgroundColor: 'action.selected',
                   },
@@ -262,41 +293,44 @@ export default function SenderGrid({
             />
           </Box>
 
-          {/* Detail Panel */}
-          {expandedGroup && (
-            <Paper sx={{ mt: 2, border: '1px solid', borderColor: 'divider' }}>
-              <Box
-                sx={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  px: 2,
-                  pt: 2,
-                }}
-              >
-                <Box>
-                  <Typography variant="h6" sx={{ mb: 0.5 }}>
-                    {expandedGroup.sender_display || expandedGroup.sender_email}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    {expandedGroup.sender_email}
-                  </Typography>
-                </Box>
-                <IconButton
-                  aria-label="collapse details"
-                  onClick={() => onToggleExpansion(expandedGroup.sender_email)}
-                  size="small"
-                >
-                  <ExpandMoreIcon sx={{ transform: 'rotate(180deg)' }} />
-                </IconButton>
-              </Box>
+          <Card
+            variant="outlined"
+            sx={{
+              width: { xs: '100%', md: 360 },
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+            }}
+          >
+            <CardContent sx={{ flex: 1, overflowY: 'auto' }}>
+              {expandedGroup ? (
+                <Stack spacing={2}>
+                  <Box>
+                    <Typography variant="subtitle1" fontWeight={600} gutterBottom>
+                      {expandedGroup.sender_display || expandedGroup.sender_email}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {expandedGroup.sender_email}
+                    </Typography>
+                  </Box>
 
-              <Divider sx={{ my: 2 }} />
+                  <Divider />
 
-              {getDetailPanelContent({ row: expandedGroup })}
-            </Paper>
-          )}
-        </>
+                  <Stack spacing={2}>
+                    {getDetailPanelContent({ row: expandedGroup })}
+                  </Stack>
+                </Stack>
+              ) : (
+                <Stack spacing={2} alignItems="center" justifyContent="center" sx={{ height: '100%' }}>
+                  <GroupIcon color="disabled" fontSize="large" />
+                  <Typography variant="body1" color="text.secondary">
+                    Select a sender to inspect recent messages.
+                  </Typography>
+                </Stack>
+              )}
+            </CardContent>
+          </Card>
+        </Box>
       )}
     </Box>
   );

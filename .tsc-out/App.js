@@ -2,7 +2,7 @@ import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
 import { appWindow } from "@tauri-apps/api/window";
-import { Box, Alert, Typography, AppBar, Toolbar, IconButton, Fab, Button, } from "@mui/material";
+import { Box, Alert, Typography, AppBar, Toolbar, IconButton, Fab, Button, Snackbar, } from "@mui/material";
 import { Menu as MenuIcon, Add as AddIcon, } from "@mui/icons-material";
 import { Error as ErrorIcon, Info as InfoIcon } from "@mui/icons-material";
 import NavigationDrawer from "./components/NavigationDrawer";
@@ -585,6 +585,12 @@ export default function App() {
             };
         });
     };
+    const handleInfoClose = (_event, reason) => {
+        if (reason === "clickaway") {
+            return;
+        }
+        setInfo(null);
+    };
     return (_jsxs(Box, { sx: { display: 'flex', height: '100vh' }, children: [_jsx(NavigationDrawer, { open: drawerOpen, accounts: accounts, selectedAccount: selectedAccount, onAccountSelect: setSelectedAccount, onNavigate: handleNavigate, currentView: currentView }), _jsxs(Box, { component: "main", sx: {
                     flex: 1,
                     display: 'flex',
@@ -602,14 +608,14 @@ export default function App() {
                             flexDirection: 'column',
                             overflow: 'auto',
                             p: 0
-                        }, ref: emailListRef, children: [error && (_jsx(Alert, { severity: "error", sx: { m: 2 }, icon: _jsx(ErrorIcon, {}), children: error })), info && (_jsx(Alert, { severity: "info", sx: { m: 2, mt: 0 }, icon: _jsx(InfoIcon, {}), children: info })), currentView === 'mailbox' && selectedAccount ? (_jsx(Mailbox, { selectedAccount: selectedAccount, accounts: accounts, emails: currentEmails, senderGroups: currentSenderGroups, totalCachedCount: totalCachedCount, syncReport: syncReport, syncProgress: syncProgress, onRefreshEmails: refreshEmails, onFullSync: handleFullSync, isSyncing: isSyncing, expandedSenderForAccount: expandedSenders[selectedAccount] || null, onToggleExpansion: toggleSenderExpansion, onStatusChange: (senderEmail, status) => handleSenderStatusChange(senderEmail, status), statusUpdating: statusUpdating, onDeleteMessage: handleDeleteMessage, pendingDeleteUid: pendingDeleteUid })) : currentView === 'automation' && selectedAccount ? (_jsx(AutomationView, { periodicMinutes: periodicMinutes, onPeriodicMinutesChange: handlePeriodicMinutesChange, onSavePeriodicSync: handleSavePeriodicSync, isSavingPeriodic: isSavingPeriodic, blockFolder: blockFolder, onBlockFolderChange: setBlockFolder, onApplyBlockFilter: handleApplyBlockFilter, isApplyingBlockFilter: isApplyingBlockFilter, syncReport: syncReport, onFullSync: handleFullSync, isSyncing: isSyncing })) : currentView === 'settings' ? (_jsx(SettingsView, {})) : currentView === 'sync' && selectedAccount ? (_jsxs(Box, { sx: { p: 3 }, children: [_jsxs(Typography, { variant: "h5", gutterBottom: true, children: ["Sync Settings for ", selectedAccount] }), _jsx(Typography, { variant: "body1", color: "text.secondary", children: "Sync configuration will be implemented here." })] })) : currentView === 'blocked' && selectedAccount ? (_jsxs(Box, { sx: { p: 3 }, children: [_jsxs(Typography, { variant: "h5", gutterBottom: true, children: ["Blocked Senders for ", selectedAccount] }), _jsx(Typography, { variant: "body1", color: "text.secondary", children: "Blocked senders management will be implemented here." })] })) : (_jsxs(Box, { sx: {
+                        }, ref: emailListRef, children: [error && (_jsx(Alert, { severity: "error", sx: { m: 2 }, icon: _jsx(ErrorIcon, {}), children: error })), currentView === 'mailbox' && selectedAccount ? (_jsx(Mailbox, { selectedAccount: selectedAccount, accounts: accounts, emails: currentEmails, senderGroups: currentSenderGroups, totalCachedCount: totalCachedCount, syncReport: syncReport, syncProgress: syncProgress, onRefreshEmails: refreshEmails, onFullSync: handleFullSync, isSyncing: isSyncing, expandedSenderForAccount: expandedSenders[selectedAccount] || null, onToggleExpansion: toggleSenderExpansion, onStatusChange: (senderEmail, status) => handleSenderStatusChange(senderEmail, status), statusUpdating: statusUpdating, onDeleteMessage: handleDeleteMessage, pendingDeleteUid: pendingDeleteUid })) : currentView === 'automation' && selectedAccount ? (_jsx(AutomationView, { periodicMinutes: periodicMinutes, onPeriodicMinutesChange: handlePeriodicMinutesChange, onSavePeriodicSync: handleSavePeriodicSync, isSavingPeriodic: isSavingPeriodic, blockFolder: blockFolder, onBlockFolderChange: setBlockFolder, onApplyBlockFilter: handleApplyBlockFilter, isApplyingBlockFilter: isApplyingBlockFilter, syncReport: syncReport, onFullSync: handleFullSync, isSyncing: isSyncing })) : currentView === 'settings' ? (_jsx(SettingsView, {})) : currentView === 'sync' && selectedAccount ? (_jsxs(Box, { sx: { p: 3 }, children: [_jsxs(Typography, { variant: "h5", gutterBottom: true, children: ["Sync Settings for ", selectedAccount] }), _jsx(Typography, { variant: "body1", color: "text.secondary", children: "Sync configuration will be implemented here." })] })) : currentView === 'blocked' && selectedAccount ? (_jsxs(Box, { sx: { p: 3 }, children: [_jsxs(Typography, { variant: "h5", gutterBottom: true, children: ["Blocked Senders for ", selectedAccount] }), _jsx(Typography, { variant: "body1", color: "text.secondary", children: "Blocked senders management will be implemented here." })] })) : (_jsxs(Box, { sx: {
                                     display: 'flex',
                                     flexDirection: 'column',
                                     alignItems: 'center',
                                     justifyContent: 'center',
                                     height: '100%',
                                     textAlign: 'center'
-                                }, children: [_jsx(Typography, { variant: "h4", component: "h2", gutterBottom: true, children: "Welcome to Personal Mail Client" }), _jsx(Typography, { variant: "body1", color: "text.secondary", sx: { mb: 4 }, children: "Connect an email account to get started with professional email management." }), _jsx(Button, { variant: "contained", size: "large", startIcon: _jsx(AddIcon, {}), onClick: handleOpenConnectionWizard, children: "Connect Account" })] }))] })] }), _jsx(Fab, { color: "primary", "aria-label": "connect account", sx: {
+                                }, children: [_jsx(Typography, { variant: "h4", component: "h2", gutterBottom: true, children: "Welcome to Personal Mail Client" }), _jsx(Typography, { variant: "body1", color: "text.secondary", sx: { mb: 4 }, children: "Connect an email account to get started with professional email management." }), _jsx(Button, { variant: "contained", size: "large", startIcon: _jsx(AddIcon, {}), onClick: handleOpenConnectionWizard, children: "Connect Account" })] }))] })] }), _jsx(Snackbar, { open: Boolean(info), autoHideDuration: 6000, onClose: handleInfoClose, anchorOrigin: { vertical: "top", horizontal: "center" }, children: _jsx(Alert, { severity: "info", icon: _jsx(InfoIcon, {}), variant: "filled", onClose: handleInfoClose, sx: { width: "100%" }, children: info }) }), _jsx(Fab, { color: "primary", "aria-label": "connect account", sx: {
                     position: 'fixed',
                     bottom: 24,
                     right: 24,
