@@ -13,6 +13,7 @@ use chrono::Utc;
 use once_cell::sync::OnceCell;
 use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
+use crate::models::{Account, Provider};
 use secrecy::{ExposeSecret, SecretVec};
 use serde_json;
 use sha2::{Digest, Sha256};
@@ -126,6 +127,14 @@ pub struct AccountSyncState {
     pub total_messages: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct AccountRecord {
+    pub provider: Provider,
+    pub email: String,
+    pub custom_host: Option<String>,
+    pub custom_port: Option<u16>,
+}
+
 #[derive(Clone)]
 pub struct Storage {
     conn: Arc<parking_lot::Mutex<Connection>>,
@@ -235,6 +244,15 @@ impl Storage {
                 last_incremental_sync INTEGER,
                 last_uid TEXT,
                 total_messages INTEGER DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS accounts (
+                email TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                custom_host TEXT,
+                custom_port INTEGER,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
             );
             "#,
         )?;
@@ -681,6 +699,122 @@ impl Storage {
         .map_err(map_join_error)?;
 
         result
+    }
+
+    pub async fn upsert_account(&self, account: &Account) -> Result<()> {
+        let conn = self.conn.clone();
+        let account = account.clone();
+        let join_result = tokio::task::spawn_blocking(move || -> Result<()> {
+            let conn = conn.lock();
+            let now = Utc::now().timestamp();
+            conn.execute(
+                r#"
+                INSERT INTO accounts (email, provider, custom_host, custom_port, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(email) DO UPDATE SET
+                    provider = excluded.provider,
+                    custom_host = excluded.custom_host,
+                    custom_port = excluded.custom_port,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    account.email,
+                    account.provider.as_key(),
+                    account.custom_host,
+                    account.custom_port.map(|value| value as i64),
+                    now,
+                    now
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(map_join_error)?;
+
+        join_result
+    }
+
+    pub async fn remove_account(&self, email: &str) -> Result<()> {
+        let conn = self.conn.clone();
+        let email = email.to_lowercase();
+        let join_result = tokio::task::spawn_blocking(move || -> Result<()> {
+            let conn = conn.lock();
+            conn.execute("DELETE FROM accounts WHERE email = ?", params![email])?;
+            Ok(())
+        })
+        .await
+        .map_err(map_join_error)?;
+
+        join_result
+    }
+
+    pub async fn account_by_email(&self, email: &str) -> Result<Option<AccountRecord>> {
+        let conn = self.conn.clone();
+        let email = email.to_lowercase();
+        let join_result = tokio::task::spawn_blocking(move || -> Result<Option<AccountRecord>> {
+            let conn = conn.lock();
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT email, provider, custom_host, custom_port
+                FROM accounts
+                WHERE email = ?
+                "#,
+            )?;
+
+            let record = stmt
+                .query_row(params![email], |row| {
+                    let provider_key: String = row.get(1)?;
+                    let provider = Provider::from_key(&provider_key)
+                        .ok_or_else(|| rusqlite::Error::InvalidQuery)?;
+                    let port: Option<i64> = row.get(3)?;
+                    Ok(AccountRecord {
+                        email: row.get(0)?,
+                        provider,
+                        custom_host: row.get(2)?,
+                        custom_port: port.map(|value| value as u16),
+                    })
+                })
+                .optional()?;
+            Ok(record)
+        })
+        .await
+        .map_err(map_join_error)?;
+
+        join_result
+    }
+
+    pub async fn list_accounts(&self) -> Result<Vec<AccountRecord>> {
+        let conn = self.conn.clone();
+        let join_result = tokio::task::spawn_blocking(move || -> Result<Vec<AccountRecord>> {
+            let conn = conn.lock();
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT email, provider, custom_host, custom_port
+                FROM accounts
+                ORDER BY email
+                "#,
+            )?;
+
+            let mut rows = stmt.query([])?;
+            let mut accounts = Vec::new();
+            while let Some(row) = rows.next()? {
+                let provider_key: String = row.get(1)?;
+                if let Some(provider) = Provider::from_key(&provider_key) {
+                    let port: Option<i64> = row.get(3)?;
+                    accounts.push(AccountRecord {
+                        email: row.get(0)?,
+                        provider,
+                        custom_host: row.get(2)?,
+                        custom_port: port.map(|value| value as u16),
+                    });
+                }
+            }
+            Ok(accounts)
+        })
+        .await
+        .map_err(map_join_error)?;
+
+        join_result
     }
 
     pub fn db_path() -> Option<&'static PathBuf> {

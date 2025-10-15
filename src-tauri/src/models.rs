@@ -17,6 +17,25 @@ pub enum Provider {
 }
 
 impl Provider {
+    pub fn as_key(&self) -> &'static str {
+        match self {
+            Provider::Gmail => "gmail",
+            Provider::Outlook => "outlook",
+            Provider::Yahoo => "yahoo",
+            Provider::Custom => "custom",
+        }
+    }
+
+    pub fn from_key(value: &str) -> Option<Self> {
+        match value {
+            "gmail" => Some(Provider::Gmail),
+            "outlook" => Some(Provider::Outlook),
+            "yahoo" => Some(Provider::Yahoo),
+            "custom" => Some(Provider::Custom),
+            _ => None,
+        }
+    }
+
     pub fn imap_host(&self) -> &'static str {
         match self {
             Provider::Gmail => "imap.gmail.com",
@@ -47,6 +66,8 @@ pub struct Account {
     pub provider: Provider,
     pub email: String,
     pub display_name: Option<String>,
+    pub custom_host: Option<String>,
+    pub custom_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,8 +113,19 @@ impl Credentials {
             provider: self.provider,
             email: self.email.clone(),
             display_name: None,
+            custom_host: self.custom_host.clone(),
+            custom_port: self.custom_port,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedAccount {
+    pub provider: Provider,
+    pub email: String,
+    pub custom_host: Option<String>,
+    pub custom_port: Option<u16>,
+    pub has_password: bool,
 }
 
 pub struct AppState {

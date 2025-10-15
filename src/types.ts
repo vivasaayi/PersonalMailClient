@@ -4,6 +4,8 @@ export interface Account {
   provider: Provider;
   email: string;
   display_name?: string | null;
+  custom_host?: string | null;
+  custom_port?: number | null;
 }
 
 export interface MailAddress {
@@ -38,6 +40,14 @@ export interface SenderGroup {
   status: SenderStatus;
   message_count: number;
   messages: AnalyzedMessage[];
+}
+
+export interface SavedAccount {
+  provider: Provider;
+  email: string;
+  custom_host?: string | null;
+  custom_port?: number | null;
+  has_password: boolean;
 }
 
 export interface ConnectAccountRequest {

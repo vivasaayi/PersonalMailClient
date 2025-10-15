@@ -7,11 +7,12 @@ use oauth2::{
     AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge, RedirectUrl, Scope, TokenResponse,
 };
 use personal_mail_client::models::{
-    AppState, ConnectAccountResponse, Credentials, EmailSummary, MailAddress, Provider, SyncHandle,
-    SyncReport,
+    AppState, ConnectAccountResponse, Credentials, EmailSummary, MailAddress, Provider, SavedAccount,
+    SyncHandle, SyncReport,
 };
 use personal_mail_client::providers::{self, ProviderError};
 use personal_mail_client::storage::{AnalysisInsert, MessageInsert, SenderStatus, Storage};
+use keyring::{Entry, Error as KeyringError};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::process::Command;
@@ -65,6 +66,89 @@ struct SyncProgressPayload {
     elapsed_ms: u64,
 }
 
+const KEYCHAIN_SERVICE: &str = "PersonalMailClient";
+
+fn keychain_entry(email: &str) -> Result<Entry, String> {
+    Entry::new(KEYCHAIN_SERVICE, email).map_err(|err| err.to_string())
+}
+
+fn store_password_in_keychain(email: &str, password: &str) -> Result<(), String> {
+    let entry = keychain_entry(email)?;
+    entry
+        .set_password(password)
+        .map_err(|err| err.to_string())
+}
+
+fn delete_password_from_keychain(email: &str) -> Result<(), String> {
+    let entry = keychain_entry(email)?;
+    match entry.delete_password() {
+        Ok(_) | Err(KeyringError::NoEntry) => Ok(()),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn fetch_password_from_keychain(email: &str) -> Result<Option<String>, String> {
+    let entry = keychain_entry(email)?;
+    match entry.get_password() {
+        Ok(password) => Ok(Some(password)),
+        Err(KeyringError::NoEntry) => Ok(None),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn password_exists_in_keychain(email: &str) -> Result<bool, String> {
+    let entry = keychain_entry(email)?;
+    match entry.get_password() {
+        Ok(password) => {
+            drop(password);
+            Ok(true)
+        }
+        Err(KeyringError::NoEntry) => Ok(false),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+async fn perform_connect(state: &AppState, credentials: Credentials) -> Result<ConnectAccountResponse, String> {
+    let normalized_email = credentials.email.clone();
+    let provider = credentials.provider;
+    info!(%normalized_email, ?provider, "connecting account");
+
+    let emails = providers::fetch_recent(&credentials, 25)
+        .await
+        .map_err(|err| {
+            error!(%normalized_email, ?err, "failed to fetch recent emails during connect");
+            provider_error_to_message(err)
+        })?;
+
+    let account = credentials.account();
+
+    {
+        let mut accounts = state.accounts.write().await;
+        accounts.insert(normalized_email.clone(), credentials.clone());
+    }
+
+    let mut inserts = Vec::with_capacity(emails.len());
+    let mut analyses = Vec::with_capacity(emails.len());
+    for summary in &emails {
+        let (insert, analysis) = build_records(&normalized_email, summary, None, None, None);
+        inserts.push(insert);
+        analyses.push(analysis);
+    }
+
+    if let Err(err) = state.storage.upsert_messages(inserts).await {
+        error!(%normalized_email, ?err, "failed to persist message cache");
+    }
+    if let Err(err) = state.storage.upsert_analysis(analyses).await {
+        error!(%normalized_email, ?err, "failed to persist analysis cache");
+    }
+    if let Err(err) = state.storage.upsert_account(&account).await {
+        error!(%normalized_email, ?err, "failed to persist account metadata");
+    }
+
+    info!(%normalized_email, email_count = emails.len(), "account connected successfully");
+    Ok(ConnectAccountResponse { account, emails })
+}
+
 #[tauri::command]
 async fn connect_account(
     state: State<'_, AppState>,
@@ -84,38 +168,102 @@ async fn connect_account(
     }
 
     let normalized_email = email.trim().to_lowercase();
-    info!(%normalized_email, ?provider, "connecting account");
-    let credentials = Credentials::new(provider, normalized_email.clone(), password, custom_host, custom_port);
-    let emails = providers::fetch_recent(&credentials, 25)
+    let credentials = Credentials::new(
+        provider,
+        normalized_email.clone(),
+        password.clone(),
+        custom_host,
+        custom_port,
+    );
+
+    let response = perform_connect(state.inner(), credentials).await?;
+
+    if let Err(err) = store_password_in_keychain(&normalized_email, &password) {
+        warn!(%normalized_email, ?err, "failed to persist password in keychain");
+    }
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn connect_account_saved(
+    state: State<'_, AppState>,
+    provider: Provider,
+    email: String,
+) -> Result<ConnectAccountResponse, String> {
+    if email.trim().is_empty() {
+        return Err("Email address is required".into());
+    }
+
+    let normalized_email = email.trim().to_lowercase();
+
+    let record = state
+        .storage
+        .account_by_email(&normalized_email)
         .await
-        .map_err(|err| {
-            error!(%normalized_email, ?err, "failed to fetch recent emails during connect");
-            provider_error_to_message(err)
-        })?;
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "No saved account metadata found for this account".to_string())?;
 
-    let account = credentials.account();
-    state
-        .accounts
-        .write()
+    if record.provider != provider {
+        warn!(%normalized_email, ?provider, actual = ?record.provider, "provider mismatch for saved account, using stored provider");
+    }
+
+    let password = fetch_password_from_keychain(&normalized_email)?
+        .ok_or_else(|| "No saved password stored in macOS keychain for this account".to_string())?;
+
+    let credentials = Credentials::new(
+        record.provider,
+        normalized_email.clone(),
+        password.clone(),
+        record.custom_host.clone(),
+        record.custom_port,
+    );
+
+    let response = perform_connect(state.inner(), credentials).await?;
+
+    if let Err(err) = store_password_in_keychain(&normalized_email, &password) {
+        warn!(%normalized_email, ?err, "failed to refresh keychain password after saved connect");
+    }
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn list_saved_accounts(state: State<'_, AppState>) -> Result<Vec<SavedAccount>, String> {
+    let records = state
+        .storage
+        .list_accounts()
         .await
-        .insert(normalized_email.clone(), credentials);
+        .map_err(|err| err.to_string())?;
 
-    let mut inserts = Vec::with_capacity(emails.len());
-    let mut analyses = Vec::with_capacity(emails.len());
-    for summary in &emails {
-        let (insert, analysis) = build_records(&normalized_email, summary, None, None, None);
-        inserts.push(insert);
-        analyses.push(analysis);
+    let mut saved = Vec::with_capacity(records.len());
+    for record in records {
+        let has_password = match password_exists_in_keychain(&record.email) {
+            Ok(value) => value,
+            Err(err) => {
+                warn!(email = %record.email, ?err, "failed to check keychain password status");
+                false
+            }
+        };
+        saved.push(SavedAccount {
+            provider: record.provider,
+            email: record.email,
+            custom_host: record.custom_host,
+            custom_port: record.custom_port,
+            has_password,
+        });
     }
 
-    if let Err(err) = state.storage.upsert_messages(inserts).await {
-        error!(%normalized_email, ?err, "failed to persist message cache");
+    Ok(saved)
+}
+
+#[tauri::command]
+fn get_saved_password(email: String) -> Result<Option<String>, String> {
+    if email.trim().is_empty() {
+        return Ok(None);
     }
-    if let Err(err) = state.storage.upsert_analysis(analyses).await {
-        error!(%normalized_email, ?err, "failed to persist analysis cache");
-    }
-    info!(%normalized_email, email_count = emails.len(), "account connected successfully");
-    Ok(ConnectAccountResponse { account, emails })
+    let normalized_email = email.trim().to_lowercase();
+    fetch_password_from_keychain(&normalized_email)
 }
 
 #[tauri::command]
@@ -698,6 +846,14 @@ async fn disconnect_account(state: State<'_, AppState>, email: String) -> Result
         warn!(%normalized_email, "disconnect_account requested but account not found");
         return Err("Account not found".into());
     }
+    drop(accounts);
+
+    if let Err(err) = state.storage.remove_account(&normalized_email).await {
+        error!(%normalized_email, ?err, "failed to remove persisted account metadata");
+    }
+    if let Err(err) = delete_password_from_keychain(&normalized_email) {
+        warn!(%normalized_email, ?err, "failed to delete keychain password during disconnect");
+    }
     info!(%normalized_email, "account disconnected");
     Ok(())
 }
@@ -973,6 +1129,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             connect_account,
+            connect_account_saved,
+            list_saved_accounts,
+            get_saved_password,
             fetch_recent,
             sync_account_full,
             sync_account_incremental,
