@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   GridComponent,
   ColumnsDirective,
@@ -17,19 +17,12 @@ import type {
   RowDeselectEventArgs,
   SelectionSettingsModel,
 } from "@syncfusion/ej2-react-grids";
-import {
-  Box,
-  Button,
-  Card,
-  CardContent,
-  Chip,
-  Divider,
-  Stack,
-  Typography,
-} from "@mui/material";
+import { Box, Button, Card, CardContent, Chip, Divider, Stack, Typography } from "@mui/material";
 import { Delete as DeleteIcon, Group as GroupIcon } from "@mui/icons-material";
 import dayjs from "dayjs";
-import type { SenderGroup, SenderStatus, AnalyzedMessage } from "../types";
+import type { SenderGroup, SenderStatus } from "../types";
+import { MailGridContainer } from "./mailgrid/MailGridContainer";
+import { GroupingToggle, type GroupOption } from "./mailgrid/GroupingToggle";
 
 interface SenderGridProps {
   senderGroups: SenderGroup[];
@@ -69,6 +62,7 @@ export default function SenderGrid({
   pendingDeleteUid,
 }: SenderGridProps) {
   const gridRef = useRef<GridComponent | null>(null);
+  const [groupOption, setGroupOption] = useState<GroupOption>("none");
 
   const pageSettings = useMemo(
     () => ({ pageSize: 10, pageSizes: [10, 25, 50] }),
@@ -88,6 +82,29 @@ export default function SenderGrid({
       })),
     [senderGroups],
   );
+
+  const isEmpty = senderGroups.length === 0;
+
+    const groupingOptions = useMemo(
+      () => [
+        {
+          value: "none" as const,
+          label: "No grouping",
+          hint: "View senders as a flat list",
+        },
+        {
+          value: "sender" as const,
+          label: "Group by domain",
+          hint: "Organize senders by their email domain",
+        },
+        {
+          value: "sender-message" as const,
+          label: "Group by status",
+          hint: "Cluster senders by current allow/block status",
+        },
+      ],
+      [],
+    );
 
   const setGridRef = useCallback((grid: GridComponent | null) => {
     gridRef.current = grid;
@@ -187,7 +204,7 @@ export default function SenderGrid({
       }
 
       return (
-        <Box sx={{ p: 3, backgroundColor: "background.default" }}>
+        <Box sx={{ p: 3, backgroundColor: "#f9fafb" }}>
           <Stack spacing={2}>
             <Box>
               <Typography variant="subtitle1" fontWeight={600} gutterBottom>
@@ -278,24 +295,6 @@ export default function SenderGrid({
     [onDeleteMessage, pendingDeleteUid],
   );
 
-  if (senderGroups.length === 0) {
-    return (
-      <Card sx={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <CardContent>
-          <Stack spacing={1} alignItems="center" textAlign="center">
-            <GroupIcon fontSize="large" color="disabled" />
-            <Typography variant="h6" color="text.secondary">
-              No cached messages yet
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              Run a full sync to populate sender insights.
-            </Typography>
-          </Stack>
-        </CardContent>
-      </Card>
-    );
-  }
-
   const handleRowSelected = useCallback(
     (args: RowSelectEventArgs) => {
       if (!args.isInteracted || !args.data) {
@@ -328,23 +327,64 @@ export default function SenderGrid({
     [expandedSenderForAccount, onToggleExpansion],
   );
 
+  const applyGrouping = useCallback(
+    (option: GroupOption) => {
+      const grid = gridRef.current;
+      const groupModule = grid?.groupModule;
+
+      if (!grid || !groupModule) {
+        return;
+      }
+
+      groupModule.clearGrouping();
+
+      if (option === "sender") {
+        groupModule.groupColumn("senderDomain");
+      } else if (option === "sender-message") {
+        groupModule.groupColumn("status");
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    applyGrouping(groupOption);
+  }, [applyGrouping, groupOption, gridData]);
+
+  const handleGroupingChange = useCallback((next: GroupOption) => {
+    setGroupOption(next);
+  }, []);
+
+  if (isEmpty) {
+    return (
+      <Card sx={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <CardContent>
+          <Stack spacing={1} alignItems="center" textAlign="center">
+            <GroupIcon fontSize="large" color="disabled" />
+            <Typography variant="h6" color="text.secondary">
+              No cached messages yet
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Run a full sync to populate sender insights.
+            </Typography>
+          </Stack>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
-    <Box
-      className="mail-grid-wrapper"
-      sx={{ height: "100%", width: "100%", display: "flex", flexDirection: "column" }}
+    <MailGridContainer
+      title="Sender insights"
+      subtitle="Select a sender to inspect recent messages, manage their status, or clean up mail."
+      toolbar={
+        <GroupingToggle
+          value={groupOption}
+          onChange={handleGroupingChange}
+          options={groupingOptions}
+        />
+      }
     >
-      <Box
-        sx={{
-          px: 2,
-          py: 1.5,
-          borderBottom: (theme) => `1px solid ${theme.palette.divider}`,
-          backgroundColor: "#ffffff",
-        }}
-      >
-        <Typography variant="body2" color="text.secondary">
-          Select a sender to inspect recent messages and manage their status. Drag a column header into the grouping bar to organize senders.
-        </Typography>
-      </Box>
       <GridComponent
         key={gridData.length}
         ref={setGridRef}
@@ -355,7 +395,7 @@ export default function SenderGrid({
         allowFiltering
         allowResizing
         allowGrouping
-        groupSettings={{ showDropArea: false, showToggleButton: true }}
+        groupSettings={{ showDropArea: false, showToggleButton: false }}
         height="100%"
         width="100%"
         rowHeight={70}
@@ -397,6 +437,6 @@ export default function SenderGrid({
         </ColumnsDirective>
         <Inject services={[Page, Sort, Filter, Group, Resize, DetailRow, Selection]} />
       </GridComponent>
-    </Box>
+    </MailGridContainer>
   );
 }

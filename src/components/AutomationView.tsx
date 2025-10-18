@@ -100,7 +100,7 @@ export default function AutomationView({
           </Box>
 
           <Typography variant="caption" color="text.secondary">
-            Set to "Disabled" to turn off periodic syncing.
+            Set to &quot;Disabled&quot; to turn off periodic syncing.
           </Typography>
         </CardContent>
       </Card>
@@ -139,7 +139,7 @@ export default function AutomationView({
           </Box>
 
           <Typography variant="caption" color="text.secondary">
-            Leave blank to use the provider default "Blocked" folder.
+            Leave blank to use the provider default &quot;Blocked&quot; folder.
           </Typography>
         </CardContent>
       </Card>

@@ -49,7 +49,29 @@ Install JavaScript dependencies and Tauri CLI:
 npm install
 ```
 
-Generate the Rust lockfile and ensure dependencies compile:
+## Environment Setup
+
+Copy the example environment file and configure your SyncFusion license:
+
+```bash
+cp .env.example .env.local
+```
+
+Edit `.env.local` and add your SyncFusion license key:
+
+```bash
+VITE_SYNCFUSION_LICENSE=your_syncfusion_license_key_here
+```
+
+> **Important:** Never commit `.env.local` to version control. It contains your SyncFusion license key and should remain private.
+
+### Getting a SyncFusion License
+
+1. Visit [SyncFusion](https://www.syncfusion.com/) and sign up for a free community license
+2. Generate your license key from the dashboard
+3. Add it to your `.env.local` file as shown above
+
+Without a valid license key, the app will show watermarks on SyncFusion components.
 
 ```bash
 ( cd src-tauri && cargo generate-lockfile )
@@ -66,6 +88,16 @@ Create a production bundle:
 ```bash
 npm run tauri:build
 ```
+
+## Licensing
+
+This application uses SyncFusion components for the user interface. SyncFusion offers a free community license for personal and open-source projects.
+
+- **Community License**: Free for personal use, open-source projects, and small businesses
+- **Commercial License**: Required for commercial applications
+- **License Key**: Required to remove watermarks from components
+
+For more information about SyncFusion licensing, visit: https://www.syncfusion.com/licensing
 
 ## Usage Tips
 

@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   GridComponent,
   ColumnsDirective,
@@ -13,9 +13,15 @@ import {
   Selection,
 } from "@syncfusion/ej2-react-grids";
 import type { SelectionSettingsModel } from "@syncfusion/ej2-react-grids";
-import { Box, Chip, Divider, Stack, Typography } from "@mui/material";
+import { Stack, Typography } from "@mui/material";
 import dayjs from "dayjs";
-import type { AnalyzedMessage, EmailSummary, SenderStatus } from "../types";
+import type { AnalyzedMessage, EmailSummary } from "../types";
+import { MailGridContainer } from "./mailgrid/MailGridContainer";
+import {
+  GroupingToggle,
+  type GroupOption,
+} from "./mailgrid/GroupingToggle";
+import { EmailDetailPanel } from "./email/EmailDetailPanel";
 
 export type EmailInsightRecord = {
   senderEmail: string;
@@ -35,17 +41,6 @@ const formatDate = (value?: string | null) => {
   return dayjs(value).format("MMM D, YYYY h:mm A");
 };
 
-const statusLabel = (status: SenderStatus) => {
-  switch (status) {
-    case "allowed":
-      return "Allowed";
-    case "blocked":
-      return "Blocked";
-    default:
-      return "Neutral";
-  }
-};
-
 function NoRecentMessages() {
   return (
     <Stack height="100%" alignItems="center" justifyContent="center" spacing={1}>
@@ -58,26 +53,36 @@ function NoRecentMessages() {
 }
 
 export default function EmailList({ emails, messageInsights }: EmailListProps) {
+  const gridRef = useRef<GridComponent | null>(null);
+  const [groupOption, setGroupOption] = useState<GroupOption>("none");
   const pageSettings = useMemo(
     () => ({ pageSize: 25, pageSizes: [25, 50, 100] }),
     [],
   );
 
-    const selectionSettings = useMemo<SelectionSettingsModel>(
-      () => ({ mode: "Row", type: "Single" }),
-      [],
-    );
+  const selectionSettings = useMemo<SelectionSettingsModel>(
+    () => ({ mode: "Row", type: "Single" }),
+    [],
+  );
 
-    const gridData = useMemo(
-      () =>
-        emails.map((email) => ({
+  const gridData = useMemo(
+    () =>
+      emails.map((email) => {
+        const senderEmail = email.sender.email;
+
+        return {
           ...email,
-          senderDomain: email.sender.email.split("@")[1] || email.sender.email,
-        })),
-      [emails],
-    );
+          senderEmail,
+          senderDomain: senderEmail.split("@")[1] || senderEmail,
+        };
+      }),
+    [emails],
+  );
 
-  type GridEmail = EmailSummary & { senderDomain: string };
+  type GridEmail = EmailSummary & {
+    senderDomain: string;
+    senderEmail: string;
+  };
 
   const subjectTemplate = useCallback(
     (props: GridEmail) => (
@@ -116,89 +121,80 @@ export default function EmailList({ emails, messageInsights }: EmailListProps) {
       const insight = messageInsights[data.uid] ?? null;
 
       return (
-        <Box sx={{ p: 3, backgroundColor: "background.default" }}>
-          <Stack spacing={2}>
-            <Box>
-              <Typography variant="subtitle1" fontWeight={600} gutterBottom>
-                {data.subject || "(No subject)"}
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                {formatDate(data.date)}
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                From {insight?.senderDisplay ?? data.sender.display_name ?? data.sender.email}
-                {" "}({insight?.senderEmail ?? data.sender.email})
-              </Typography>
-            </Box>
-
-            <Divider />
-
-            {insight ? (
-              <Stack spacing={2}>
-                <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
-                  <Chip label={`Status: ${statusLabel(insight.message.status)}`} size="small" variant="outlined" />
-                  {insight.message.analysis_sentiment && (
-                    <Chip
-                      label={`Sentiment: ${insight.message.analysis_sentiment}`}
-                      size="small"
-                      color={
-                        insight.message.analysis_sentiment === "positive"
-                          ? "success"
-                          : insight.message.analysis_sentiment === "negative"
-                            ? "error"
-                            : "default"
-                      }
-                    />
-                  )}
-                </Box>
-                <Typography variant="body2">
-                  {insight.message.analysis_summary ?? insight.message.snippet ?? "No preview available."}
-                </Typography>
-                {insight.message.analysis_categories.length > 0 && (
-                  <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
-                    {insight.message.analysis_categories.map((category) => (
-                      <Chip
-                        key={category}
-                        label={category}
-                        size="small"
-                        variant="outlined"
-                        sx={{ fontSize: "0.7rem" }}
-                      />
-                    ))}
-                  </Box>
-                )}
-              </Stack>
-            ) : (
-              <Typography variant="body2" color="text.secondary">
-                No additional analysis is available yet for this message.
-              </Typography>
-            )}
-          </Stack>
-        </Box>
+        <EmailDetailPanel email={data} insight={insight} />
       );
     },
     [messageInsights],
   );
+
+  const groupingOptions = useMemo(
+    () => [
+      {
+        value: "none" as const,
+        label: "No grouping",
+        hint: "Show all messages in a flat list",
+      },
+      {
+        value: "sender" as const,
+        label: "Group by sender",
+        hint: "Cluster messages by the sender's email address",
+      },
+      {
+        value: "sender-message" as const,
+        label: "Sender + subject",
+        hint: "Nest by sender, then message subject",
+      },
+    ],
+    [],
+  );
+
+  const applyGrouping = useCallback(
+    (option: GroupOption) => {
+      const grid = gridRef.current;
+      const groupModule = grid?.groupModule;
+
+      if (!grid || !groupModule) {
+        return;
+      }
+
+      groupModule.clearGrouping();
+
+      if (option === "sender") {
+        groupModule.groupColumn("senderEmail");
+      } else if (option === "sender-message") {
+        groupModule.groupColumn("senderEmail");
+        groupModule.groupColumn("subject");
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    applyGrouping(groupOption);
+  }, [applyGrouping, groupOption, gridData]);
+
+  const handleGroupingChange = useCallback((next: GroupOption) => {
+    setGroupOption(next);
+  }, []);
 
   if (emails.length === 0) {
     return <NoRecentMessages />;
   }
 
   return (
-    <Box className="mail-grid-wrapper" sx={{ height: "100%", width: "100%" }}>
-      <Box
-        sx={{
-          px: 2,
-          py: 1.5,
-          borderBottom: (theme) => `1px solid ${theme.palette.divider}`,
-          backgroundColor: "#ffffff",
-        }}
-      >
-        <Typography variant="body2" color="text.secondary">
-          Drag a column header into the grouping bar to cluster related messages. Click a row to open its insight panel.
-        </Typography>
-      </Box>
+    <MailGridContainer
+      title="Message insights"
+      subtitle="Review recent messages along with AI-powered analysis. Use grouping to cluster related items."
+      toolbar={
+        <GroupingToggle
+          value={groupOption}
+          onChange={handleGroupingChange}
+          options={groupingOptions}
+        />
+      }
+    >
       <GridComponent
+        ref={gridRef}
         key={gridData.length}
         dataSource={gridData}
         allowPaging
@@ -207,7 +203,7 @@ export default function EmailList({ emails, messageInsights }: EmailListProps) {
         allowFiltering
         allowResizing
         allowGrouping
-        groupSettings={{ showDropArea: false, showToggleButton: true }}
+        groupSettings={{ showDropArea: false, showToggleButton: false }}
         height="100%"
         width="100%"
         rowHeight={60}
@@ -216,6 +212,11 @@ export default function EmailList({ emails, messageInsights }: EmailListProps) {
         cssClass="mail-grid"
       >
         <ColumnsDirective>
+          <ColumnDirective
+            field="senderEmail"
+            headerText="Sender email"
+            visible={false}
+          />
           <ColumnDirective
             field="senderDomain"
             headerText="Domain"
@@ -243,6 +244,6 @@ export default function EmailList({ emails, messageInsights }: EmailListProps) {
         </ColumnsDirective>
         <Inject services={[Page, Sort, Filter, Group, Resize, DetailRow, Selection]} />
       </GridComponent>
-    </Box>
+    </MailGridContainer>
   );
 }

@@ -29,7 +29,7 @@ interface SettingsViewProps {
   // Add props as needed for settings functionality
 }
 
-export default function SettingsView({}: SettingsViewProps) {
+const SettingsView: React.FC<SettingsViewProps> = () => {
   return (
     <Box sx={{ p: 3, maxWidth: 1200, mx: 'auto' }}>
       <Typography variant="h4" component="h1" gutterBottom sx={{ fontWeight: 'bold' }}>
@@ -247,4 +247,6 @@ export default function SettingsView({}: SettingsViewProps) {
       </Box>
     </Box>
   );
-}
+};
+
+export default SettingsView;

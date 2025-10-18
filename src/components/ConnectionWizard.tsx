@@ -11,13 +11,8 @@ import {
   Box,
   Typography,
   TextField,
-  FormControl,
-  InputLabel,
-  Select,
-  MenuItem,
   Alert,
   Paper,
-  Chip,
   List,
   ListItem,
   ListItemButton,
@@ -192,7 +187,7 @@ export default function ConnectionWizard({
               Choose Your Email Provider
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-              Select the email service you want to connect to. We'll guide you through the setup process.
+              Select the email service you want to connect to. We&apos;ll guide you through the setup process.
             </Typography>
 
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -327,7 +322,7 @@ export default function ConnectionWizard({
 
               <Alert severity="info" icon={<SecurityIcon />}>
                 <Typography variant="body2">
-                  <strong>Security Note:</strong> Your credentials are stored securely in your system's keychain and are only used to connect to your email server.
+                  <strong>Security Note:</strong> Your credentials are stored securely in your system&apos;s keychain and are only used to connect to your email server.
                 </Typography>
               </Alert>
             </Box>

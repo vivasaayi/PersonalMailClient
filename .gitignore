@@ -14,4 +14,7 @@ src-tauri/tauri.conf.local.*
 .vscode/
 .idea/
 .tsc-out
+
+# Environment variables (contains sensitive data like SyncFusion license keys)
 .env.local
+.env.*.local
