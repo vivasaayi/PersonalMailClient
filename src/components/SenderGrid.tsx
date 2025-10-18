@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   GridComponent,
   ColumnsDirective,
@@ -17,8 +17,7 @@ import type {
   RowDeselectEventArgs,
   SelectionSettingsModel,
 } from "@syncfusion/ej2-react-grids";
-import { Box, Button, Card, CardContent, Chip, Divider, Stack, Typography } from "@mui/material";
-import { Delete as DeleteIcon, Group as GroupIcon } from "@mui/icons-material";
+import { ButtonComponent } from "@syncfusion/ej2-react-buttons";
 import dayjs from "dayjs";
 import type { SenderGroup, SenderStatus } from "../types";
 import { MailGridContainer } from "./mailgrid/MailGridContainer";
@@ -136,27 +135,21 @@ export default function SenderGrid({
 
   const senderTemplate = useCallback(
     (props: GridSenderGroup) => (
-      <Stack direction="row" alignItems="center" spacing={1} sx={{ width: "100%" }}>
-        <Box sx={{ overflow: "hidden" }}>
-          <Typography variant="body2" fontWeight={600} noWrap>
-            {props.sender_display || props.sender_email}
-          </Typography>
-          <Typography variant="caption" color="text.secondary" noWrap>
-            {props.sender_email}
-          </Typography>
-        </Box>
-      </Stack>
+      createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', width: '100%' } }, [
+        createElement('div', { style: { overflow: 'hidden', flex: 1 } }, [
+          createElement('div', { style: { fontSize: '14px', fontWeight: '600', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, props.sender_display || props.sender_email),
+          createElement('div', { style: { fontSize: '12px', color: '#6b7280', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, props.sender_email)
+        ])
+      ])
     ),
     [],
   );
 
   const messageCountTemplate = useCallback(
     (props: GridSenderGroup) => (
-      <Chip
-        label={`${props.message_count} message${props.message_count === 1 ? "" : "s"}`}
-        size="small"
-        variant="outlined"
-      />
+      createElement('span', {
+        style: { padding: '4px 8px', border: '1px solid #d1d5db', borderRadius: '4px', fontSize: '12px', backgroundColor: '#f3f4f6' }
+      }, `${props.message_count} message${props.message_count === 1 ? "" : "s"}`)
     ),
     [],
   );
@@ -166,28 +159,16 @@ export default function SenderGrid({
       const statuses: SenderStatus[] = ["allowed", "neutral", "blocked"];
       const isUpdating = statusUpdating === props.sender_email;
 
-      return (
-        <Box sx={{ display: "flex", gap: 0.5, justifyContent: "center" }}>
-          {statuses.map((status) => (
-            <Button
-              key={status}
-              size="small"
-              variant={props.status === status ? "contained" : "outlined"}
-              color={
-                status === "allowed"
-                  ? "success"
-                  : status === "blocked"
-                    ? "error"
-                    : "inherit"
-              }
-              onClick={() => onStatusChange(props.sender_email, status)}
-              disabled={isUpdating || props.status === status}
-              sx={{ minWidth: "auto", px: 1, py: 0.5 }}
-            >
-              {statusLabel(status)}
-            </Button>
-          ))}
-        </Box>
+      return createElement('div', { style: { display: 'flex', gap: '4px', justifyContent: 'center' } },
+        statuses.map((status) =>
+          createElement(ButtonComponent, {
+            key: status,
+            cssClass: `status-button ${props.status === status ? 'active' : ''}`,
+            content: statusLabel(status),
+            disabled: isUpdating || props.status === status,
+            onClick: () => onStatusChange(props.sender_email, status)
+          })
+        )
       );
     },
     [onStatusChange, statusUpdating],
@@ -196,101 +177,85 @@ export default function SenderGrid({
   const detailTemplate = useCallback(
     (data: GridSenderGroup) => {
       if (data.messages.length === 0) {
-        return (
-          <Box sx={{ p: 3, textAlign: "center", color: "text.secondary" }}>
-            No messages to display
-          </Box>
-        );
+        return createElement('div', {
+          style: { padding: '24px', textAlign: 'center', color: '#6b7280' }
+        }, 'No messages to display');
       }
 
-      return (
-        <Box sx={{ p: 3, backgroundColor: "#f9fafb" }}>
-          <Stack spacing={2}>
-            <Box>
-              <Typography variant="subtitle1" fontWeight={600} gutterBottom>
-                {data.sender_display || data.sender_email}
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                {data.sender_email}
-              </Typography>
-            </Box>
-
-            <Divider />
-
-            <Stack spacing={2}>
-              {data.messages.map((message) => {
-                const deleteKey = `${data.sender_email}::${message.uid}`;
-                return (
-                  <Card key={message.uid} variant="outlined" sx={{ overflow: "hidden" }}>
-                    <CardContent>
-                      <Stack spacing={1.5}>
-                        <Box sx={{ display: "flex", justifyContent: "space-between", gap: 2 }}>
-                          <Box sx={{ flex: 1, minWidth: 0 }}>
-                            <Typography variant="subtitle2" noWrap gutterBottom>
-                              {message.subject || "(No subject)"}
-                            </Typography>
-                            <Typography variant="caption" color="text.secondary">
-                              {formatDate(message.date)}
-                            </Typography>
-                          </Box>
-                          <Button
-                            size="small"
-                            color="error"
-                            variant="outlined"
-                            startIcon={<DeleteIcon />}
-                            onClick={() => onDeleteMessage(data.sender_email, message.uid)}
-                            disabled={pendingDeleteUid === deleteKey}
-                          >
-                            {pendingDeleteUid === deleteKey ? "Deleting…" : "Delete"}
-                          </Button>
-                        </Box>
-
-                        {message.analysis_sentiment && (
-                          <Chip
-                            label={`Sentiment: ${message.analysis_sentiment}`}
-                            size="small"
-                            color={
-                              message.analysis_sentiment === "positive"
-                                ? "success"
-                                : message.analysis_sentiment === "negative"
-                                  ? "error"
-                                  : "default"
-                            }
-                          />
-                        )}
-
-                        <Typography variant="body2">
-                          {message.analysis_summary ?? message.snippet ?? "No preview available."}
-                        </Typography>
-
-                        {message.analysis_categories.length > 0 && (
-                          <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
-                            {message.analysis_categories.map((category) => (
-                              <Chip
-                                key={category}
-                                label={category}
-                                size="small"
-                                variant="outlined"
-                                sx={{ fontSize: "0.7rem" }}
-                              />
-                            ))}
-                          </Box>
-                        )}
-
-                        {message.flags && (
-                          <Typography variant="caption" color="text.secondary">
-                            Flags: {message.flags}
-                          </Typography>
-                        )}
-                      </Stack>
-                    </CardContent>
-                  </Card>
-                );
-              })}
-            </Stack>
-          </Stack>
-        </Box>
-      );
+      return createElement('div', { style: { padding: '24px', backgroundColor: '#f9fafb' } }, [
+        createElement('div', { key: 'header', style: { marginBottom: '16px' } }, [
+          createElement('div', {
+            key: 'title',
+            style: { fontSize: '18px', fontWeight: '600', color: '#111827', marginBottom: '8px' }
+          }, data.sender_display || data.sender_email),
+          createElement('div', {
+            key: 'email',
+            style: { fontSize: '14px', color: '#6b7280' }
+          }, data.sender_email)
+        ]),
+        createElement('hr', { key: 'divider', style: { border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' } }),
+        createElement('div', { key: 'messages', style: { display: 'flex', flexDirection: 'column', gap: '16px' } },
+          data.messages.map((message) => {
+            const deleteKey = `${data.sender_email}::${message.uid}`;
+            return createElement('div', {
+              key: message.uid,
+              style: { border: '1px solid #d1d5db', borderRadius: '8px', overflow: 'hidden', backgroundColor: '#ffffff' }
+            }, [
+              createElement('div', { key: 'content', style: { padding: '16px' } }, [
+                createElement('div', { key: 'header-row', style: { display: 'flex', justifyContent: 'space-between', gap: '16px', marginBottom: '12px' } }, [
+                  createElement('div', { key: 'text', style: { flex: 1, minWidth: 0 } }, [
+                    createElement('div', {
+                      key: 'subject',
+                      style: { fontSize: '16px', fontWeight: '600', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginBottom: '4px' }
+                    }, message.subject || "(No subject)"),
+                    createElement('div', {
+                      key: 'date',
+                      style: { fontSize: '12px', color: '#6b7280' }
+                    }, formatDate(message.date))
+                  ]),
+                  createElement(ButtonComponent, {
+                    key: 'delete',
+                    cssClass: 'delete-button',
+                    content: pendingDeleteUid === deleteKey ? "Deleting…" : "Delete",
+                    disabled: pendingDeleteUid === deleteKey,
+                    onClick: () => onDeleteMessage(data.sender_email, message.uid)
+                  })
+                ]),
+                message.analysis_sentiment && createElement('span', {
+                  key: 'sentiment',
+                  style: {
+                    display: 'inline-block',
+                    padding: '4px 8px',
+                    border: '1px solid #d1d5db',
+                    borderRadius: '4px',
+                    fontSize: '12px',
+                    backgroundColor: '#ffffff',
+                    marginBottom: '8px',
+                    color: message.analysis_sentiment === "positive" ? '#16a34a' : message.analysis_sentiment === "negative" ? '#dc2626' : '#6b7280'
+                  }
+                }, `Sentiment: ${message.analysis_sentiment}`),
+                createElement('div', {
+                  key: 'summary',
+                  style: { fontSize: '14px', color: '#111827', lineHeight: '1.5', marginBottom: '8px' }
+                }, message.analysis_summary ?? message.snippet ?? "No preview available."),
+                message.analysis_categories.length > 0 && createElement('div', {
+                  key: 'categories',
+                  style: { display: 'flex', gap: '8px', flexWrap: 'wrap' }
+                }, message.analysis_categories.map(category =>
+                  createElement('span', {
+                    key: category,
+                    style: { padding: '2px 6px', border: '1px solid #d1d5db', borderRadius: '4px', fontSize: '11px', backgroundColor: '#ffffff' }
+                  }, category)
+                )),
+                message.flags && createElement('div', {
+                  key: 'flags',
+                  style: { fontSize: '12px', color: '#6b7280', marginTop: '8px' }
+                }, `Flags: ${message.flags}`)
+              ])
+            ]);
+          })
+        )
+      ]);
     },
     [onDeleteMessage, pendingDeleteUid],
   );
@@ -356,21 +321,29 @@ export default function SenderGrid({
   }, []);
 
   if (isEmpty) {
-    return (
-      <Card sx={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <CardContent>
-          <Stack spacing={1} alignItems="center" textAlign="center">
-            <GroupIcon fontSize="large" color="disabled" />
-            <Typography variant="h6" color="text.secondary">
-              No cached messages yet
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              Run a full sync to populate sender insights.
-            </Typography>
-          </Stack>
-        </CardContent>
-      </Card>
-    );
+    return createElement('div', {
+      style: {
+        flex: 1,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        border: '1px solid #d1d5db',
+        borderRadius: '8px',
+        backgroundColor: '#ffffff'
+      }
+    }, [
+      createElement('div', { key: 'content', style: { padding: '24px', textAlign: 'center' } }, [
+        createElement('div', { key: 'icon', style: { fontSize: '48px', color: '#9ca3af', marginBottom: '16px' } }, '👥'),
+        createElement('div', {
+          key: 'title',
+          style: { fontSize: '20px', fontWeight: '600', color: '#6b7280', marginBottom: '8px' }
+        }, 'No cached messages yet'),
+        createElement('div', {
+          key: 'subtitle',
+          style: { fontSize: '14px', color: '#6b7280' }
+        }, 'Run a full sync to populate sender insights.')
+      ])
+    ]);
   }
 
   return (

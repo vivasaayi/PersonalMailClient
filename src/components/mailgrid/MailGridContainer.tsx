@@ -1,11 +1,11 @@
-import { Box, Stack, Typography } from "@mui/material";
-import type { ReactNode } from "react";
+import { createElement } from 'react';
+import { ToolbarComponent, ItemsDirective, ItemDirective } from '@syncfusion/ej2-react-navigations';
 
 export interface MailGridContainerProps {
-  title?: ReactNode;
-  subtitle?: ReactNode;
-  toolbar?: ReactNode;
-  children: ReactNode;
+  title?: string;
+  subtitle?: string;
+  toolbar?: any;
+  children: any;
 }
 
 export function MailGridContainer({
@@ -14,35 +14,37 @@ export function MailGridContainer({
   toolbar,
   children,
 }: MailGridContainerProps) {
-  return (
-    <Box className="mail-grid-wrapper" sx={{ height: "100%", width: "100%" }}>
-      <Stack
-        direction={{ xs: "column", sm: "row" }}
-        spacing={2}
-        alignItems={{ xs: "flex-start", sm: "center" }}
-        justifyContent="space-between"
-        sx={{
-          px: 2,
-          py: 1.5,
-          borderBottom: (theme) => `1px solid ${theme.palette.divider}`,
-          backgroundColor: (theme) => theme.palette.background.paper,
-        }}
-      >
-        <Stack spacing={0.5}>
-          {title ? (
-            <Typography variant="subtitle1" sx={{ color: (theme) => theme.palette.text.primary, fontWeight: 600 }}>
-              {title}
-            </Typography>
-          ) : null}
-          {subtitle ? (
-            <Typography variant="body2" sx={{ color: (theme) => theme.palette.text.secondary }}>
-              {subtitle}
-            </Typography>
-          ) : null}
-        </Stack>
-        {toolbar ? <Box sx={{ ml: { sm: "auto" } }}>{toolbar}</Box> : null}
-      </Stack>
-      <Box sx={{ flex: 1, display: "flex", flexDirection: "column" }}>{children}</Box>
-    </Box>
-  );
+  return createElement('div', {
+    className: 'mail-grid-wrapper',
+    style: { height: '100%', width: '100%', display: 'flex', flexDirection: 'column' }
+  }, [
+    createElement(ToolbarComponent, {
+      key: 'toolbar',
+      cssClass: 'mail-grid-header',
+      style: { borderBottom: '1px solid #e5e7eb' }
+    }, [
+      createElement(ItemsDirective, { key: 'items' }, [
+        createElement(ItemDirective, {
+          key: 'title-section',
+          template: createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '4px' } }, [
+            title && createElement('div', {
+              style: { fontSize: '16px', fontWeight: '600', color: '#111827' }
+            }, title),
+            subtitle && createElement('div', {
+              style: { fontSize: '14px', color: '#6b7280' }
+            }, subtitle)
+          ])
+        }),
+        toolbar && createElement(ItemDirective, {
+          key: 'toolbar-section',
+          align: 'Right',
+          template: toolbar
+        })
+      ])
+    ]),
+    createElement('div', {
+      key: 'content',
+      style: { flex: 1, display: 'flex', flexDirection: 'column' }
+    }, children)
+  ]);
 }

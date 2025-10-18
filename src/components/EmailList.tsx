@@ -13,7 +13,7 @@ import {
   Selection,
 } from "@syncfusion/ej2-react-grids";
 import type { SelectionSettingsModel } from "@syncfusion/ej2-react-grids";
-import { Stack, Typography } from "@mui/material";
+import { createElement } from 'react';
 import dayjs from "dayjs";
 import type { AnalyzedMessage, EmailSummary } from "../types";
 import { MailGridContainer } from "./mailgrid/MailGridContainer";
@@ -42,14 +42,25 @@ const formatDate = (value?: string | null) => {
 };
 
 function NoRecentMessages() {
-  return (
-    <Stack height="100%" alignItems="center" justifyContent="center" spacing={1}>
-      <Typography variant="subtitle1">No messages in the last fetch window.</Typography>
-      <Typography variant="body2" color="text.secondary">
-        Pull to refresh or run a sync to fetch new mail.
-      </Typography>
-    </Stack>
-  );
+  return createElement('div', {
+    style: {
+      height: '100%',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: '8px'
+    }
+  }, [
+    createElement('h3', {
+      key: 'title',
+      style: { margin: 0, fontSize: '1.125rem', fontWeight: '500' }
+    }, 'No messages in the last fetch window.'),
+    createElement('p', {
+      key: 'subtitle',
+      style: { margin: 0, color: '#6b7280', fontSize: '0.875rem' }
+    }, 'Pull to refresh or run a sync to fetch new mail.')
+  ]);
 }
 
 export default function EmailList({ emails, messageInsights }: EmailListProps) {
@@ -85,34 +96,54 @@ export default function EmailList({ emails, messageInsights }: EmailListProps) {
   };
 
   const subjectTemplate = useCallback(
-    (props: GridEmail) => (
-      <Stack spacing={0.25} sx={{ minWidth: 0 }}>
-        <Typography variant="body2" fontWeight={600} noWrap>
-          {props.subject || "(No subject)"}
-        </Typography>
-        <Typography variant="caption" color="text.secondary" noWrap>
-          {props.sender.display_name ?? props.sender.email}
-        </Typography>
-      </Stack>
-    ),
+    (props: GridEmail) => createElement('div', {
+      style: { display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 }
+    }, [
+      createElement('div', {
+        key: 'subject',
+        style: {
+          fontSize: '0.875rem',
+          fontWeight: '600',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis'
+        }
+      }, props.subject || "(No subject)"),
+      createElement('div', {
+        key: 'sender',
+        style: {
+          fontSize: '0.75rem',
+          color: '#6b7280',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis'
+        }
+      }, props.sender.display_name ?? props.sender.email)
+    ]),
     [],
   );
 
   const senderTemplate = useCallback(
-    (props: GridEmail) => (
-      <Typography variant="body2" noWrap>
-        {props.sender.email}
-      </Typography>
-    ),
+    (props: GridEmail) => createElement('div', {
+      style: {
+        fontSize: '0.875rem',
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis'
+      }
+    }, props.sender.email),
     [],
   );
 
   const receivedTemplate = useCallback(
-    (props: GridEmail) => (
-      <Typography variant="body2" noWrap>
-        {formatDate(props.date)}
-      </Typography>
-    ),
+    (props: GridEmail) => createElement('div', {
+      style: {
+        fontSize: '0.875rem',
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis'
+      }
+    }, formatDate(props.date)),
     [],
   );
 

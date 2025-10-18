@@ -1,10 +1,8 @@
-import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
 import { appWindow } from "@tauri-apps/api/window";
-import { Box, Alert, Typography, AppBar, Toolbar, IconButton, Fab, Button, Snackbar, } from "@mui/material";
-import { Menu as MenuIcon, Add as AddIcon, } from "@mui/icons-material";
-import { Error as ErrorIcon, Info as InfoIcon } from "@mui/icons-material";
+import { ButtonComponent } from '@syncfusion/ej2-react-buttons';
+import { createElement } from 'react';
 import NavigationDrawer from "./components/NavigationDrawer";
 import ConnectionWizard from "./components/ConnectionWizard";
 import Mailbox from "./components/Mailbox";
@@ -591,57 +589,217 @@ export default function App() {
         }
         setInfo(null);
     };
-    return (_jsxs(Box, { sx: { display: 'flex', height: '100vh' }, children: [_jsx(NavigationDrawer, { open: drawerOpen, accounts: accounts, selectedAccount: selectedAccount, onAccountSelect: setSelectedAccount, onNavigate: handleNavigate, currentView: currentView }), _jsxs(Box, { component: "main", sx: {
+    return createElement('div', { style: { display: 'flex', height: '100vh' } }, [
+        // Navigation Drawer
+        createElement(NavigationDrawer, {
+            key: 'nav-drawer',
+            open: drawerOpen,
+            accounts: accounts,
+            selectedAccount: selectedAccount,
+            onAccountSelect: setSelectedAccount,
+            onNavigate: handleNavigate,
+            currentView: currentView
+        }),
+        // Main Content
+        createElement('main', {
+            key: 'main-content',
+            style: {
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                overflow: 'hidden'
+            }
+        }, [
+            // App Bar
+            createElement('header', {
+                key: 'app-bar',
+                style: {
+                    backgroundColor: '#ffffff',
+                    color: '#000000',
+                    borderBottom: '1px solid #e5e7eb',
+                    padding: '8px 16px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    zIndex: 1100
+                }
+            }, [
+                createElement(ButtonComponent, {
+                    key: 'menu-button',
+                    cssClass: 'menu-button',
+                    content: '☰',
+                    onClick: handleDrawerToggle
+                }),
+                createElement('h1', {
+                    key: 'title',
+                    style: {
+                        flexGrow: 1,
+                        fontSize: '1.25rem',
+                        fontWeight: '500',
+                        margin: '0 0 0 16px'
+                    }
+                }, 'Personal Mail Client')
+            ]),
+            // Content Area
+            createElement('div', {
+                key: 'content-area',
+                style: {
                     flex: 1,
                     display: 'flex',
                     flexDirection: 'column',
-                    overflow: 'hidden'
-                }, children: [_jsx(AppBar, { position: "static", elevation: 1, sx: {
-                            zIndex: (theme) => theme.zIndex.drawer + 1,
-                            backgroundColor: 'background.paper',
-                            color: 'text.primary',
-                            borderBottom: '1px solid',
-                            borderBottomColor: 'divider'
-                        }, children: _jsxs(Toolbar, { children: [_jsx(IconButton, { color: "inherit", "aria-label": "toggle drawer", onClick: handleDrawerToggle, edge: "start", sx: { mr: 2 }, children: _jsx(MenuIcon, {}) }), _jsx(Typography, { variant: "h6", component: "div", sx: { flexGrow: 1 }, children: "Personal Mail Client" })] }) }), _jsxs(Box, { sx: {
-                            flex: 1,
-                            display: 'flex',
-                            flexDirection: 'column',
-                            overflow: 'auto',
-                            p: 0
-                        }, ref: emailListRef, children: [error && (_jsx(Alert, { severity: "error", sx: { m: 2 }, icon: _jsx(ErrorIcon, {}), children: error })), currentView === 'mailbox' && selectedAccount ? (_jsx(Mailbox, { selectedAccount: selectedAccount, accounts: accounts, emails: currentEmails, senderGroups: currentSenderGroups, totalCachedCount: totalCachedCount, syncReport: syncReport, syncProgress: syncProgress, onRefreshEmails: refreshEmails, onFullSync: handleFullSync, isSyncing: isSyncing, expandedSenderForAccount: expandedSenders[selectedAccount] || null, onToggleExpansion: toggleSenderExpansion, onStatusChange: (senderEmail, status) => handleSenderStatusChange(senderEmail, status), statusUpdating: statusUpdating, onDeleteMessage: handleDeleteMessage, pendingDeleteUid: pendingDeleteUid })) : currentView === 'automation' && selectedAccount ? (_jsx(AutomationView, { periodicMinutes: periodicMinutes, onPeriodicMinutesChange: handlePeriodicMinutesChange, onSavePeriodicSync: handleSavePeriodicSync, isSavingPeriodic: isSavingPeriodic, blockFolder: blockFolder, onBlockFolderChange: setBlockFolder, onApplyBlockFilter: handleApplyBlockFilter, isApplyingBlockFilter: isApplyingBlockFilter, syncReport: syncReport, onFullSync: handleFullSync, isSyncing: isSyncing })) : currentView === 'settings' ? (_jsx(SettingsView, {})) : currentView === 'sync' && selectedAccount ? (_jsxs(Box, { sx: { p: 3 }, children: [_jsxs(Typography, { variant: "h5", gutterBottom: true, children: ["Sync Settings for ", selectedAccount] }), _jsx(Typography, { variant: "body1", color: "text.secondary", children: "Sync configuration will be implemented here." })] })) : currentView === 'blocked' && selectedAccount ? (_jsxs(Box, { sx: { p: 3 }, children: [_jsxs(Typography, { variant: "h5", gutterBottom: true, children: ["Blocked Senders for ", selectedAccount] }), _jsx(Typography, { variant: "body1", color: "text.secondary", children: "Blocked senders management will be implemented here." })] })) : (_jsxs(Box, { sx: {
-                                    display: 'flex',
-                                    flexDirection: 'column',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    height: '100%',
-                                    textAlign: 'center'
-                                }, children: [_jsx(Typography, { variant: "h4", component: "h2", gutterBottom: true, children: "Welcome to Personal Mail Client" }), _jsx(Typography, { variant: "body1", color: "text.secondary", sx: { mb: 4 }, children: "Connect an email account to get started with professional email management." }), _jsx(Button, { variant: "contained", size: "large", startIcon: _jsx(AddIcon, {}), onClick: handleOpenConnectionWizard, children: "Connect Account" })] }))] })] }), _jsx(Snackbar, { open: Boolean(info), autoHideDuration: 6000, onClose: handleInfoClose, anchorOrigin: { vertical: "top", horizontal: "center" }, children: _jsx(Alert, { severity: "info", icon: _jsx(InfoIcon, {}), variant: "filled", onClose: handleInfoClose, sx: { width: "100%" }, children: info }) }), _jsx(Fab, { color: "primary", "aria-label": "connect account", sx: {
-                    position: 'fixed',
-                    bottom: 24,
-                    right: 24,
-                    zIndex: 1000
-                }, onClick: handleOpenConnectionWizard, children: _jsx(AddIcon, {}) }), _jsx(ConnectionWizard, { open: connectionWizardOpen, onClose: handleCloseConnectionWizard, onConnect: async (formData) => {
-                    setError(null);
-                    setInfo(null);
-                    setIsSubmitting(true);
-                    try {
-                        const payload = await invoke("connect_account", {
-                            provider: formData.provider,
-                            email: formData.email,
-                            password: formData.password,
-                            customHost: formData.customHost || undefined,
-                            customPort: formData.customPort ? formData.customPort : undefined
-                        });
-                        await applyConnectResponse(payload);
-                        await loadSavedAccounts();
-                        setInfo(`Connected to ${providerLabels[payload.account.provider]} as ${payload.account.email}`);
+                    overflow: 'auto',
+                    padding: 0
+                },
+                ref: emailListRef
+            }, [
+                // Error Alert
+                error && createElement('div', {
+                    key: 'error-alert',
+                    style: {
+                        margin: '16px',
+                        padding: '12px 16px',
+                        backgroundColor: '#fef2f2',
+                        border: '1px solid #fecaca',
+                        borderRadius: '6px',
+                        color: '#dc2626',
+                        display: 'flex',
+                        alignItems: 'center'
                     }
-                    catch (err) {
-                        console.error(err);
-                        setError(err instanceof Error ? err.message : String(err));
+                }, [
+                    createElement('span', { key: 'error-icon', style: { marginRight: '8px' } }, '⚠️'),
+                    error
+                ]),
+                // View Content
+                currentView === 'mailbox' && selectedAccount ? createElement(Mailbox, {
+                    key: 'mailbox-view',
+                    selectedAccount: selectedAccount,
+                    accounts: accounts,
+                    emails: currentEmails,
+                    senderGroups: currentSenderGroups,
+                    totalCachedCount: totalCachedCount,
+                    syncReport: syncReport,
+                    syncProgress: syncProgress,
+                    onRefreshEmails: refreshEmails,
+                    onFullSync: handleFullSync,
+                    isSyncing: isSyncing,
+                    expandedSenderForAccount: expandedSenders[selectedAccount] || null,
+                    onToggleExpansion: toggleSenderExpansion,
+                    onStatusChange: (senderEmail, status) => handleSenderStatusChange(senderEmail, status),
+                    statusUpdating: statusUpdating,
+                    onDeleteMessage: handleDeleteMessage,
+                    pendingDeleteUid: pendingDeleteUid
+                }) : currentView === 'automation' && selectedAccount ? createElement(AutomationView, {
+                    key: 'automation-view',
+                    periodicMinutes: periodicMinutes,
+                    onPeriodicMinutesChange: handlePeriodicMinutesChange,
+                    onSavePeriodicSync: handleSavePeriodicSync,
+                    isSavingPeriodic: isSavingPeriodic,
+                    blockFolder: blockFolder,
+                    onBlockFolderChange: setBlockFolder,
+                    onApplyBlockFilter: handleApplyBlockFilter,
+                    isApplyingBlockFilter: isApplyingBlockFilter,
+                    syncReport: syncReport,
+                    onFullSync: handleFullSync,
+                    isSyncing: isSyncing
+                }) : currentView === 'settings' ? createElement(SettingsView, { key: 'settings-view' }) : currentView === 'sync' && selectedAccount ? createElement('div', {
+                    key: 'sync-view',
+                    style: { padding: '24px' }
+                }, [
+                    createElement('h2', { key: 'sync-title', style: { marginBottom: '16px' } }, `Sync Settings for ${selectedAccount}`),
+                    createElement('p', { key: 'sync-desc', style: { color: '#6b7280' } }, 'Sync configuration will be implemented here.')
+                ]) : currentView === 'blocked' && selectedAccount ? createElement('div', {
+                    key: 'blocked-view',
+                    style: { padding: '24px' }
+                }, [
+                    createElement('h2', { key: 'blocked-title', style: { marginBottom: '16px' } }, `Blocked Senders for ${selectedAccount}`),
+                    createElement('p', { key: 'blocked-desc', style: { color: '#6b7280' } }, 'Blocked senders management will be implemented here.')
+                ]) : createElement('div', {
+                    key: 'welcome-view',
+                    style: {
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        height: '100%',
+                        textAlign: 'center'
                     }
-                    finally {
-                        setIsSubmitting(false);
-                    }
-                }, onConnectSaved: connectSavedAccount, savedAccounts: savedAccounts, isSubmitting: isSubmitting, prefillingSavedEmail: null, connectingSavedEmail: connectingSavedEmail })] }));
+                }, [
+                    createElement('h2', { key: 'welcome-title', style: { marginBottom: '16px' } }, 'Welcome to Personal Mail Client'),
+                    createElement('p', { key: 'welcome-desc', style: { marginBottom: '32px', color: '#6b7280' } }, 'Connect an email account to get started with professional email management.'),
+                    createElement(ButtonComponent, {
+                        key: 'connect-button',
+                        cssClass: 'primary large',
+                        content: '+ Connect Account',
+                        onClick: handleOpenConnectionWizard
+                    })
+                ])
+            ])
+        ]),
+        // Info Snackbar
+        info && createElement('div', {
+            key: 'info-snackbar',
+            style: {
+                position: 'fixed',
+                top: '24px',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                backgroundColor: '#3b82f6',
+                color: '#ffffff',
+                padding: '12px 24px',
+                borderRadius: '6px',
+                zIndex: 1300,
+                display: 'flex',
+                alignItems: 'center'
+            }
+        }, [
+            createElement('span', { key: 'info-icon', style: { marginRight: '8px' } }, 'ℹ️'),
+            info,
+            createElement('button', {
+                key: 'close-info',
+                style: { marginLeft: '16px', background: 'none', border: 'none', color: '#ffffff', cursor: 'pointer' },
+                onClick: handleInfoClose
+            }, '×')
+        ]),
+        // Floating Action Button
+        createElement(ButtonComponent, {
+            key: 'fab',
+            cssClass: 'fab primary',
+            content: '+',
+            onClick: handleOpenConnectionWizard
+        }),
+        // Connection Wizard
+        createElement(ConnectionWizard, {
+            key: 'connection-wizard',
+            open: connectionWizardOpen,
+            onClose: handleCloseConnectionWizard,
+            onConnect: async (formData) => {
+                setError(null);
+                setInfo(null);
+                setIsSubmitting(true);
+                try {
+                    const payload = await invoke("connect_account", {
+                        provider: formData.provider,
+                        email: formData.email,
+                        password: formData.password,
+                        customHost: formData.customHost || undefined,
+                        customPort: formData.customPort ? formData.customPort : undefined
+                    });
+                    await applyConnectResponse(payload);
+                    await loadSavedAccounts();
+                    setInfo(`Connected to ${providerLabels[payload.account.provider]} as ${payload.account.email}`);
+                }
+                catch (err) {
+                    console.error(err);
+                    setError(err instanceof Error ? err.message : String(err));
+                }
+                finally {
+                    setIsSubmitting(false);
+                }
+            },
+            onConnectSaved: connectSavedAccount,
+            savedAccounts: savedAccounts,
+            isSubmitting: isSubmitting,
+            prefillingSavedEmail: null,
+            connectingSavedEmail: connectingSavedEmail
+        })
+    ]);
 }

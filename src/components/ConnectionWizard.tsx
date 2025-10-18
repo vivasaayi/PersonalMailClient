@@ -1,33 +1,6 @@
-import React, { useState } from 'react';
-import {
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  Stepper,
-  Step,
-  StepLabel,
-  Button,
-  Box,
-  Typography,
-  TextField,
-  Alert,
-  Paper,
-  List,
-  ListItem,
-  ListItemButton,
-  ListItemText,
-  ListItemIcon,
-  Divider,
-} from '@mui/material';
-import {
-  AccountCircle as AccountIcon,
-  Security as SecurityIcon,
-  CheckCircle as CheckIcon,
-  Email as EmailIcon,
-  VpnKey as KeyIcon,
-  Settings as SettingsIcon,
-} from '@mui/icons-material';
+import React, { useState, createElement } from 'react';
+import { ButtonComponent } from '@syncfusion/ej2-react-buttons';
+import { DialogComponent } from '@syncfusion/ej2-react-popups';
 import type { Provider, SavedAccount } from '../types';
 
 interface ConnectionWizardProps {
@@ -54,25 +27,25 @@ const providerOptions = [
     value: 'gmail' as Provider,
     label: 'Gmail',
     description: 'Google Mail with OAuth',
-    icon: <EmailIcon />,
+    icon: '📧',
   },
   {
     value: 'outlook' as Provider,
     label: 'Outlook / Live',
     description: 'Microsoft Outlook and Live Mail',
-    icon: <EmailIcon />,
+    icon: '📧',
   },
   {
     value: 'yahoo' as Provider,
     label: 'Yahoo Mail',
     description: 'Yahoo Mail with app passwords',
-    icon: <EmailIcon />,
+    icon: '📧',
   },
   {
     value: 'custom' as Provider,
     label: 'Custom IMAP',
     description: 'Any IMAP-compatible server',
-    icon: <SettingsIcon />,
+    icon: '⚙️',
   },
 ];
 
@@ -181,278 +154,491 @@ export default function ConnectionWizard({
   const renderStepContent = (step: number) => {
     switch (step) {
       case 0:
-        return (
-          <Box sx={{ mt: 2 }}>
-            <Typography variant="h6" gutterBottom>
-              Choose Your Email Provider
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-              Select the email service you want to connect to. We&apos;ll guide you through the setup process.
-            </Typography>
+        return createElement('div', { style: { marginTop: '16px' } }, [
+          createElement('h2', {
+            key: 'title',
+            style: { margin: '0 0 8px 0', fontSize: '18px', fontWeight: 'bold' }
+          }, 'Choose Your Email Provider'),
+          createElement('p', {
+            key: 'description',
+            style: { margin: '0 0 24px 0', color: '#666', fontSize: '14px' }
+          }, 'Select the email service you want to connect to. We\'ll guide you through the setup process.'),
 
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              {providerOptions.map((option) => (
-                <Paper
-                  key={option.value}
-                  elevation={formData.provider === option.value ? 4 : 1}
-                  sx={{
-                    p: 2,
-                    cursor: 'pointer',
-                    border: formData.provider === option.value ? 2 : 1,
-                    borderColor: formData.provider === option.value ? 'primary.main' : 'divider',
-                    transition: 'all 0.2s',
-                    '&:hover': {
-                      elevation: 2,
-                    },
-                  }}
-                  onClick={() => setFormData({ ...formData, provider: option.value })}
-                >
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                    {option.icon}
-                    <Box sx={{ flex: 1 }}>
-                      <Typography variant="subtitle1" fontWeight="medium">
-                        {option.label}
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        {option.description}
-                      </Typography>
-                    </Box>
-                    {formData.provider === option.value && (
-                      <CheckIcon color="primary" />
-                    )}
-                  </Box>
-                </Paper>
-              ))}
-            </Box>
+          createElement('div', {
+            key: 'providers',
+            style: { display: 'flex', flexDirection: 'column', gap: '16px' }
+          }, providerOptions.map((option) =>
+            createElement('div', {
+              key: option.value,
+              style: {
+                padding: '16px',
+                border: formData.provider === option.value ? '2px solid #1976d2' : '1px solid #ddd',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                backgroundColor: formData.provider === option.value ? '#f3f9ff' : 'white',
+                boxShadow: formData.provider === option.value ? '0 2px 8px rgba(25, 118, 210, 0.2)' : '0 1px 3px rgba(0,0,0,0.1)',
+                transition: 'all 0.2s',
+              },
+              onClick: () => setFormData({ ...formData, provider: option.value })
+            }, createElement('div', {
+              style: { display: 'flex', alignItems: 'center', gap: '16px' }
+            }, [
+              createElement('span', {
+                key: 'icon',
+                style: { fontSize: '24px' }
+              }, option.icon),
+              createElement('div', {
+                key: 'content',
+                style: { flex: 1 }
+              }, [
+                createElement('div', {
+                  key: 'label',
+                  style: { fontSize: '16px', fontWeight: '500', marginBottom: '4px' }
+                }, option.label),
+                createElement('div', {
+                  key: 'description',
+                  style: { fontSize: '14px', color: '#666' }
+                }, option.description)
+              ]),
+              formData.provider === option.value && createElement('span', {
+                key: 'check',
+                style: { color: '#1976d2', fontSize: '20px' }
+              }, '✓')
+            ]))
+          )),
 
-            {savedAccounts.length > 0 && (
-              <>
-                <Divider sx={{ my: 3 }} />
-                <Typography variant="h6" gutterBottom>
-                  Quick Connect - Saved Accounts
-                </Typography>
-                <List>
-                  {savedAccounts.map((saved) => (
-                    <ListItem key={saved.email} disablePadding>
-                      <ListItemButton
-                        onClick={() => handleSavedAccountSelect(saved)}
-                        disabled={connectingSavedEmail === saved.email}
-                        sx={{ borderRadius: 1 }}
-                      >
-                        <ListItemIcon>
-                          <AccountIcon />
-                        </ListItemIcon>
-                        <ListItemText
-                          primary={saved.email}
-                          secondary={`${saved.provider} ${saved.has_password ? '(saved password)' : '(password required)'}`}
-                        />
-                        {connectingSavedEmail === saved.email && (
-                          <Typography variant="caption" color="primary">
-                            Connecting...
-                          </Typography>
-                        )}
-                      </ListItemButton>
-                    </ListItem>
-                  ))}
-                </List>
-              </>
-            )}
-          </Box>
-        );
+          savedAccounts.length > 0 && createElement('div', { key: 'saved-accounts' }, [
+            createElement('hr', {
+              key: 'divider',
+              style: { margin: '32px 0', border: 'none', borderTop: '1px solid #ddd' }
+            }),
+            createElement('h2', {
+              key: 'saved-title',
+              style: { margin: '0 0 16px 0', fontSize: '18px', fontWeight: 'bold' }
+            }, 'Quick Connect - Saved Accounts'),
+            createElement('ul', {
+              key: 'saved-list',
+              style: { listStyle: 'none', padding: 0, margin: 0 }
+            }, savedAccounts.map((saved) =>
+              createElement('li', {
+                key: saved.email,
+                style: { marginBottom: '8px' }
+              }, createElement('button', {
+                style: {
+                  width: '100%',
+                  padding: '12px',
+                  border: '1px solid #ddd',
+                  borderRadius: '4px',
+                  backgroundColor: 'white',
+                  cursor: connectingSavedEmail === saved.email ? 'not-allowed' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  opacity: connectingSavedEmail === saved.email ? 0.6 : 1
+                },
+                onClick: () => handleSavedAccountSelect(saved),
+                disabled: connectingSavedEmail === saved.email
+              }, [
+                createElement('span', {
+                  key: 'icon',
+                  style: { fontSize: '20px' }
+                }, '👤'),
+                createElement('div', {
+                  key: 'content',
+                  style: { flex: 1, textAlign: 'left' }
+                }, [
+                  createElement('div', {
+                    key: 'email',
+                    style: { fontWeight: '500' }
+                  }, saved.email),
+                  createElement('div', {
+                    key: 'details',
+                    style: { fontSize: '12px', color: '#666' }
+                  }, `${saved.provider} ${saved.has_password ? '(saved password)' : '(password required)'}`)
+                ]),
+                connectingSavedEmail === saved.email && createElement('span', {
+                  key: 'connecting',
+                  style: { fontSize: '12px', color: '#1976d2' }
+                }, 'Connecting...')
+              ]))
+            ))
+          ])
+        ]);
 
       case 1:
-        return (
-          <Box sx={{ mt: 2 }}>
-            <Typography variant="h6" gutterBottom>
-              Enter Your Credentials
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-              Provide your email credentials. For security, we recommend using app passwords when available.
-            </Typography>
+        return createElement('div', { style: { marginTop: '16px' } }, [
+          createElement('h2', {
+            key: 'title',
+            style: { margin: '0 0 8px 0', fontSize: '18px', fontWeight: 'bold' }
+          }, 'Enter Your Credentials'),
+          createElement('p', {
+            key: 'description',
+            style: { margin: '0 0 24px 0', color: '#666', fontSize: '14px' }
+          }, 'Provide your email credentials. For security, we recommend using app passwords when available.'),
 
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-              <TextField
-                fullWidth
-                label="Email Address"
-                type="email"
-                value={formData.email}
-                onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                error={!!errors.email}
-                helperText={errors.email}
-                disabled={prefillingSavedEmail === formData.email}
-              />
+          createElement('div', {
+            key: 'form',
+            style: { display: 'flex', flexDirection: 'column', gap: '24px' }
+          }, [
+            // Email input
+            createElement('div', { key: 'email-group' }, [
+              createElement('label', {
+                key: 'email-label',
+                style: { display: 'block', marginBottom: '8px', fontWeight: '500' }
+              }, 'Email Address'),
+              createElement('input', {
+                key: 'email-input',
+                type: 'email',
+                value: formData.email,
+                onChange: (e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, email: e.target.value }),
+                disabled: prefillingSavedEmail === formData.email,
+                style: {
+                  width: '100%',
+                  padding: '12px',
+                  border: errors.email ? '1px solid #f44336' : '1px solid #ddd',
+                  borderRadius: '4px',
+                  fontSize: '14px',
+                  boxSizing: 'border-box'
+                }
+              }),
+              errors.email && createElement('div', {
+                key: 'email-error',
+                style: { color: '#f44336', fontSize: '12px', marginTop: '4px' }
+              }, errors.email)
+            ]),
 
-              {formData.provider !== 'gmail' && (
-                <TextField
-                  fullWidth
-                  label="Password"
-                  type="password"
-                  value={formData.password}
-                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  error={!!errors.password}
-                  helperText={errors.password || 'Use app password for better security'}
-                  disabled={prefillingSavedEmail === formData.email}
-                />
-              )}
+            // Password input (only for non-Gmail)
+            formData.provider !== 'gmail' && createElement('div', { key: 'password-group' }, [
+              createElement('label', {
+                key: 'password-label',
+                style: { display: 'block', marginBottom: '8px', fontWeight: '500' }
+              }, 'Password'),
+              createElement('input', {
+                key: 'password-input',
+                type: 'password',
+                value: formData.password,
+                onChange: (e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, password: e.target.value }),
+                disabled: prefillingSavedEmail === formData.email,
+                style: {
+                  width: '100%',
+                  padding: '12px',
+                  border: errors.password ? '1px solid #f44336' : '1px solid #ddd',
+                  borderRadius: '4px',
+                  fontSize: '14px',
+                  boxSizing: 'border-box'
+                }
+              }),
+              createElement('div', {
+                key: 'password-help',
+                style: {
+                  color: errors.password ? '#f44336' : '#666',
+                  fontSize: '12px',
+                  marginTop: '4px'
+                }
+              }, errors.password || 'Use app password for better security')
+            ]),
 
-              {formData.provider === 'custom' && (
-                <>
-                  <TextField
-                    fullWidth
-                    label="IMAP Host"
-                    value={formData.customHost}
-                    onChange={(e) => setFormData({ ...formData, customHost: e.target.value })}
-                    error={!!errors.customHost}
-                    helperText={errors.customHost || 'e.g., imap.gmail.com'}
-                    placeholder="imap.example.com"
-                  />
+            // Custom IMAP settings
+            formData.provider === 'custom' && createElement('div', { key: 'custom-settings' }, [
+              createElement('div', { key: 'host-group', style: { marginBottom: '16px' } }, [
+                createElement('label', {
+                  key: 'host-label',
+                  style: { display: 'block', marginBottom: '8px', fontWeight: '500' }
+                }, 'IMAP Host'),
+                createElement('input', {
+                  key: 'host-input',
+                  type: 'text',
+                  value: formData.customHost,
+                  onChange: (e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, customHost: e.target.value }),
+                  placeholder: 'imap.example.com',
+                  style: {
+                    width: '100%',
+                    padding: '12px',
+                    border: errors.customHost ? '1px solid #f44336' : '1px solid #ddd',
+                    borderRadius: '4px',
+                    fontSize: '14px',
+                    boxSizing: 'border-box'
+                  }
+                }),
+                createElement('div', {
+                  key: 'host-help',
+                  style: {
+                    color: errors.customHost ? '#f44336' : '#666',
+                    fontSize: '12px',
+                    marginTop: '4px'
+                  }
+                }, errors.customHost || 'e.g., imap.gmail.com')
+              ]),
 
-                  <TextField
-                    fullWidth
-                    label="IMAP Port"
-                    type="number"
-                    value={formData.customPort}
-                    onChange={(e) => setFormData({ ...formData, customPort: parseInt(e.target.value) || 993 })}
-                    error={!!errors.customPort}
-                    helperText={errors.customPort || 'Usually 993 for SSL/TLS'}
-                    inputProps={{ min: 1, max: 65535 }}
-                  />
-                </>
-              )}
+              createElement('div', { key: 'port-group' }, [
+                createElement('label', {
+                  key: 'port-label',
+                  style: { display: 'block', marginBottom: '8px', fontWeight: '500' }
+                }, 'IMAP Port'),
+                createElement('input', {
+                  key: 'port-input',
+                  type: 'number',
+                  value: formData.customPort,
+                  onChange: (e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, customPort: parseInt(e.target.value) || 993 }),
+                  min: 1,
+                  max: 65535,
+                  style: {
+                    width: '100%',
+                    padding: '12px',
+                    border: errors.customPort ? '1px solid #f44336' : '1px solid #ddd',
+                    borderRadius: '4px',
+                    fontSize: '14px',
+                    boxSizing: 'border-box'
+                  }
+                }),
+                createElement('div', {
+                  key: 'port-help',
+                  style: {
+                    color: errors.customPort ? '#f44336' : '#666',
+                    fontSize: '12px',
+                    marginTop: '4px'
+                  }
+                }, errors.customPort || 'Usually 993 for SSL/TLS')
+              ])
+            ]),
 
-              <Alert severity="info" icon={<SecurityIcon />}>
-                <Typography variant="body2">
-                  <strong>Security Note:</strong> Your credentials are stored securely in your system&apos;s keychain and are only used to connect to your email server.
-                </Typography>
-              </Alert>
-            </Box>
-          </Box>
-        );
+            // Security note
+            createElement('div', {
+              key: 'security-note',
+              style: {
+                padding: '16px',
+                backgroundColor: '#e3f2fd',
+                border: '1px solid #bbdefb',
+                borderRadius: '4px',
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '12px'
+              }
+            }, [
+              createElement('span', {
+                key: 'security-icon',
+                style: { fontSize: '20px' }
+              }, '🔒'),
+              createElement('div', {
+                key: 'security-text',
+                style: { fontSize: '14px', color: '#0d47a1' }
+              }, createElement('strong', {}, 'Security Note:'), ' Your credentials are stored securely in your system\'s keychain and are only used to connect to your email server.')
+            ])
+          ])
+        ]);
 
       case 2:
-        return (
-          <Box sx={{ mt: 2 }}>
-            <Typography variant="h6" gutterBottom>
-              Review Connection Details
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-              Please review your connection settings before connecting.
-            </Typography>
+        return createElement('div', { style: { marginTop: '16px' } }, [
+          createElement('h2', {
+            key: 'title',
+            style: { margin: '0 0 8px 0', fontSize: '18px', fontWeight: 'bold' }
+          }, 'Review Connection Details'),
+          createElement('p', {
+            key: 'description',
+            style: { margin: '0 0 24px 0', color: '#666', fontSize: '14px' }
+          }, 'Please review your connection settings before connecting.'),
 
-            <Paper sx={{ p: 3, bgcolor: 'grey.50' }}>
-              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                  <EmailIcon color="primary" />
-                  <Box>
-                    <Typography variant="body2" color="text.secondary">
-                      Provider
-                    </Typography>
-                    <Typography variant="body1" fontWeight="medium">
-                      {providerOptions.find(p => p.value === formData.provider)?.label}
-                    </Typography>
-                  </Box>
-                </Box>
+          createElement('div', {
+            key: 'review-card',
+            style: {
+              padding: '24px',
+              backgroundColor: '#f9f9f9',
+              border: '1px solid #e0e0e0',
+              borderRadius: '8px',
+              marginBottom: '24px'
+            }
+          }, createElement('div', {
+            style: { display: 'flex', flexDirection: 'column', gap: '16px' }
+          }, [
+            // Provider
+            createElement('div', {
+              key: 'provider-row',
+              style: { display: 'flex', alignItems: 'center', gap: '16px' }
+            }, [
+              createElement('span', {
+                key: 'provider-icon',
+                style: { fontSize: '20px', color: '#1976d2' }
+              }, '📧'),
+              createElement('div', { key: 'provider-content' }, [
+                createElement('div', {
+                  key: 'provider-label',
+                  style: { fontSize: '12px', color: '#666', marginBottom: '4px' }
+                }, 'Provider'),
+                createElement('div', {
+                  key: 'provider-value',
+                  style: { fontSize: '16px', fontWeight: '500' }
+                }, providerOptions.find(p => p.value === formData.provider)?.label)
+              ])
+            ]),
 
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                  <AccountIcon color="primary" />
-                  <Box>
-                    <Typography variant="body2" color="text.secondary">
-                      Email Address
-                    </Typography>
-                    <Typography variant="body1" fontWeight="medium">
-                      {formData.email}
-                    </Typography>
-                  </Box>
-                </Box>
+            // Email
+            createElement('div', {
+              key: 'email-row',
+              style: { display: 'flex', alignItems: 'center', gap: '16px' }
+            }, [
+              createElement('span', {
+                key: 'email-icon',
+                style: { fontSize: '20px', color: '#1976d2' }
+              }, '👤'),
+              createElement('div', { key: 'email-content' }, [
+                createElement('div', {
+                  key: 'email-label',
+                  style: { fontSize: '12px', color: '#666', marginBottom: '4px' }
+                }, 'Email Address'),
+                createElement('div', {
+                  key: 'email-value',
+                  style: { fontSize: '16px', fontWeight: '500' }
+                }, formData.email)
+              ])
+            ]),
 
-                {formData.provider === 'custom' && (
-                  <>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                      <SettingsIcon color="primary" />
-                      <Box>
-                        <Typography variant="body2" color="text.secondary">
-                          IMAP Server
-                        </Typography>
-                        <Typography variant="body1" fontWeight="medium">
-                          {formData.customHost}:{formData.customPort}
-                        </Typography>
-                      </Box>
-                    </Box>
-                  </>
-                )}
+            // Custom server (if applicable)
+            formData.provider === 'custom' && createElement('div', {
+              key: 'server-row',
+              style: { display: 'flex', alignItems: 'center', gap: '16px' }
+            }, [
+              createElement('span', {
+                key: 'server-icon',
+                style: { fontSize: '20px', color: '#1976d2' }
+              }, '⚙️'),
+              createElement('div', { key: 'server-content' }, [
+                createElement('div', {
+                  key: 'server-label',
+                  style: { fontSize: '12px', color: '#666', marginBottom: '4px' }
+                }, 'IMAP Server'),
+                createElement('div', {
+                  key: 'server-value',
+                  style: { fontSize: '16px', fontWeight: '500' }
+                }, `${formData.customHost}:${formData.customPort}`)
+              ])
+            ]),
 
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                  <KeyIcon color="primary" />
-                  <Box>
-                    <Typography variant="body2" color="text.secondary">
-                      Authentication
-                    </Typography>
-                    <Typography variant="body1" fontWeight="medium">
-                      {formData.password ? 'Password provided' : 'OAuth (Gmail)'}
-                    </Typography>
-                  </Box>
-                </Box>
-              </Box>
-            </Paper>
+            // Authentication
+            createElement('div', {
+              key: 'auth-row',
+              style: { display: 'flex', alignItems: 'center', gap: '16px' }
+            }, [
+              createElement('span', {
+                key: 'auth-icon',
+                style: { fontSize: '20px', color: '#1976d2' }
+              }, '🔑'),
+              createElement('div', { key: 'auth-content' }, [
+                createElement('div', {
+                  key: 'auth-label',
+                  style: { fontSize: '12px', color: '#666', marginBottom: '4px' }
+                }, 'Authentication'),
+                createElement('div', {
+                  key: 'auth-value',
+                  style: { fontSize: '16px', fontWeight: '500' }
+                }, formData.password ? 'Password provided' : 'OAuth (Gmail)')
+              ])
+            ])
+          ])),
 
-            <Alert severity="warning" sx={{ mt: 3 }}>
-              <Typography variant="body2">
-                Make sure your email account has IMAP enabled and you have the correct credentials before connecting.
-              </Typography>
-            </Alert>
-          </Box>
-        );
+          // Warning alert
+          createElement('div', {
+            key: 'warning-alert',
+            style: {
+              padding: '16px',
+              backgroundColor: '#fff3e0',
+              border: '1px solid #ffcc02',
+              borderRadius: '4px'
+            }
+          }, createElement('div', {
+            style: { fontSize: '14px', color: '#e65100' }
+          }, createElement('strong', {}, 'Warning:'), ' Make sure your email account has IMAP enabled and you have the correct credentials before connecting.'))
+        ]);
 
       default:
         return null;
     }
   };
 
-  return (
-    <Dialog
-      open={open}
-      onClose={onClose}
-      maxWidth="md"
-      fullWidth
-      disableEscapeKeyDown={isSubmitting}
-    >
-      <DialogTitle>
-        <Typography variant="h5" component="div" sx={{ fontWeight: 'bold' }}>
-          Connect Email Account
-        </Typography>
-      </DialogTitle>
-
-      <DialogContent>
-        <Stepper activeStep={activeStep} sx={{ mb: 4 }}>
-          {steps.map((label) => (
-            <Step key={label}>
-              <StepLabel>{label}</StepLabel>
-            </Step>
-          ))}
-        </Stepper>
-
-        {renderStepContent(activeStep)}
-      </DialogContent>
-
-      <DialogActions sx={{ p: 3, pt: 0 }}>
-        <Button
-          onClick={activeStep === 0 ? onClose : handleBack}
-          disabled={isSubmitting}
-        >
-          {activeStep === 0 ? 'Cancel' : 'Back'}
-        </Button>
-
-        <Button
-          variant="contained"
-          onClick={activeStep === steps.length - 1 ? handleConnect : handleNext}
-          disabled={isSubmitting}
-        >
-          {activeStep === steps.length - 1
-            ? (isSubmitting ? 'Connecting...' : 'Connect')
-            : 'Next'
+  return createElement(DialogComponent, {
+    isModal: true,
+    visible: open,
+    width: '80%',
+    height: 'auto',
+    showCloseIcon: true,
+    closeOnEscape: !isSubmitting,
+    close: onClose,
+    header: createElement('div', {
+      style: { fontSize: '20px', fontWeight: 'bold', padding: '16px' }
+    }, 'Connect Email Account'),
+    content: createElement('div', { style: { padding: '16px' } }, [
+      // Stepper
+      createElement('div', {
+        key: 'stepper',
+        style: {
+          display: 'flex',
+          justifyContent: 'space-between',
+          marginBottom: '32px',
+          padding: '0 16px'
+        }
+      }, steps.map((label, index) =>
+        createElement('div', {
+          key: `step-${index}`,
+          style: {
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            flex: 1,
+            padding: '8px',
+            borderRadius: '4px',
+            backgroundColor: index === activeStep ? '#e3f2fd' : index < activeStep ? '#e8f5e8' : '#f5f5f5',
+            margin: '0 4px'
           }
-        </Button>
-      </DialogActions>
-    </Dialog>
-  );
+        }, [
+          createElement('div', {
+            key: 'circle',
+            style: {
+              width: '32px',
+              height: '32px',
+              borderRadius: '50%',
+              backgroundColor: index <= activeStep ? '#1976d2' : '#bdbdbd',
+              color: 'white',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontWeight: 'bold',
+              marginBottom: '8px'
+            }
+          }, index < activeStep ? '✓' : (index + 1).toString()),
+          createElement('div', {
+            key: 'label',
+            style: {
+              fontSize: '12px',
+              textAlign: 'center',
+              color: index <= activeStep ? '#1976d2' : '#666'
+            }
+          }, label)
+        ])
+      )),
+      // Step content
+      renderStepContent(activeStep)
+    ]),
+    footerTemplate: createElement('div', {
+      style: {
+        display: 'flex',
+        justifyContent: 'space-between',
+        padding: '16px',
+        borderTop: '1px solid #e0e0e0'
+      }
+    }, [
+      createElement(ButtonComponent, {
+        key: 'cancel-back',
+        cssClass: 'e-outline',
+        onClick: activeStep === 0 ? onClose : handleBack,
+        disabled: isSubmitting
+      }, activeStep === 0 ? 'Cancel' : 'Back'),
+      createElement(ButtonComponent, {
+        key: 'next-connect',
+        cssClass: 'e-primary',
+        onClick: activeStep === steps.length - 1 ? handleConnect : handleNext,
+        disabled: isSubmitting
+      }, activeStep === steps.length - 1
+        ? (isSubmitting ? 'Connecting...' : 'Connect')
+        : 'Next')
+    ])
+  });
 }

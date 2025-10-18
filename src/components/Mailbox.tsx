@@ -1,20 +1,7 @@
-import { useMemo, useState } from "react";
-import {
-  Box,
-  Typography,
-  Button,
-  Paper,
-  Tabs,
-  Tab,
-  LinearProgress,
-  Chip
-} from "@mui/material";
-import {
-  Refresh as RefreshIcon,
-  Sync as SyncIcon,
-  Email as EmailIcon,
-  Group as GroupIcon
-} from "@mui/icons-material";
+import { createElement, useMemo, useState } from "react";
+import { ButtonComponent } from "@syncfusion/ej2-react-buttons";
+import { TabComponent, TabItemDirective, TabItemsDirective } from "@syncfusion/ej2-react-navigations";
+import { ProgressBarComponent } from "@syncfusion/ej2-react-progressbar";
 import type { Account, EmailSummary, SenderGroup, SyncReport, SyncProgress } from "../types";
 import EmailList, { type EmailInsightRecord } from "./EmailList";
 import SenderGrid from "./SenderGrid";
@@ -93,141 +80,108 @@ export default function Mailbox({
   const getTabIcon = (tabKey: TabKey) => {
     switch (tabKey) {
       case "recent":
-        return <EmailIcon />;
+        return "📧";
       case "senders":
-        return <GroupIcon />;
+        return "👥";
       default:
-        return <EmailIcon />;
+        return "📧";
     }
   };
 
-  return (
-    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      {/* Header */}
-      <Paper sx={{ p: 2, mb: 2, backgroundColor: 'custom.mailbox.headerBg' }}>
-        <Box display="flex" justifyContent="space-between" alignItems="center">
-          <Box>
-            <Typography variant="h5" component="h2" gutterBottom>
-              {selectedAccount}
-            </Typography>
-            <Chip
-              label={`Connected via ${providerLabel}`}
-              size="small"
-              color="primary"
-              variant="outlined"
-            />
-          </Box>
-          <Box display="flex" gap={1}>
-            <Button
-              variant="outlined"
-              startIcon={<RefreshIcon />}
-              onClick={onRefreshEmails}
-              size="small"
-            >
-              Refresh recent
-            </Button>
-            <Button
-              variant="contained"
-              startIcon={<SyncIcon />}
-              onClick={onFullSync}
-              disabled={isSyncing}
-              size="small"
-            >
-              {isSyncing ? "Syncing…" : "Full sync"}
-            </Button>
-          </Box>
-        </Box>
-      </Paper>
+  return createElement('div', { style: { height: '100%', display: 'flex', flexDirection: 'column' } }, [
+    // Header
+    createElement('div', {
+      key: 'header',
+      style: { padding: '16px', marginBottom: '16px', backgroundColor: '#1f2937', borderRadius: '8px' }
+    }, [
+      createElement('div', { key: 'header-content', style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } }, [
+        createElement('div', { key: 'account-info' }, [
+          createElement('div', {
+            key: 'account-name',
+            style: { fontSize: '24px', fontWeight: '600', color: '#ffffff', marginBottom: '8px' }
+          }, selectedAccount),
+          createElement('span', {
+            key: 'provider-chip',
+            style: { padding: '4px 8px', border: '1px solid #3b82f6', borderRadius: '4px', fontSize: '12px', backgroundColor: '#1e40af', color: '#ffffff' }
+          }, `Connected via ${providerLabel}`)
+        ]),
+        createElement('div', { key: 'actions', style: { display: 'flex', gap: '8px' } }, [
+          createElement(ButtonComponent, {
+            key: 'refresh',
+            cssClass: 'refresh-button',
+            content: 'Refresh recent',
+            onClick: onRefreshEmails
+          }),
+          createElement(ButtonComponent, {
+            key: 'sync',
+            cssClass: 'sync-button primary',
+            content: isSyncing ? "Syncing…" : "Full sync",
+            disabled: isSyncing,
+            onClick: onFullSync
+          })
+        ])
+      ])
+    ]),
 
-      {/* Stats */}
-      <Paper sx={{ p: 2, mb: 2 }}>
-        <Box display="flex" flexWrap="wrap" gap={2} alignItems="center">
-          <Chip
-            label={`${emails.length.toLocaleString()}${
-              totalCachedCount > emails.length
-                ? ` of ${totalCachedCount.toLocaleString()}`
-                : ""
-            } cached message${totalCachedCount === 1 ? "" : "s"}`}
-            color="info"
-            variant="outlined"
-          />
-          {syncReport && (
-            <Chip
-              label={`Last sync: ${syncReport.stored.toLocaleString()} stored • ${syncReport.fetched.toLocaleString()} fetched`}
-              color="success"
-              variant="outlined"
-            />
-          )}
-          {syncProgress && syncProgress.total_batches > 0 && (
-            <Chip
-              label={`Batch ${syncProgress.batch}/${syncProgress.total_batches} (${syncProgress.fetched.toLocaleString()} fetched)`}
-              color="warning"
-              variant="outlined"
-            />
-          )}
-        </Box>
+    // Stats
+    createElement('div', { key: 'stats', style: { padding: '16px', marginBottom: '16px', backgroundColor: '#ffffff', borderRadius: '8px' } }, [
+      createElement('div', { key: 'stats-content', style: { display: 'flex', flexWrap: 'wrap', gap: '16px', alignItems: 'center' } }, [
+        createElement('span', {
+          key: 'message-count',
+          style: { padding: '4px 8px', border: '1px solid #0ea5e9', borderRadius: '4px', fontSize: '14px', backgroundColor: '#f0f9ff', color: '#0c4a6e' }
+        }, `${emails.length.toLocaleString()}${totalCachedCount > emails.length ? ` of ${totalCachedCount.toLocaleString()}` : ""} cached message${totalCachedCount === 1 ? "" : "s"}`),
+        syncReport && createElement('span', {
+          key: 'sync-report',
+          style: { padding: '4px 8px', border: '1px solid #16a34a', borderRadius: '4px', fontSize: '14px', backgroundColor: '#f0fdf4', color: '#14532d' }
+        }, `Last sync: ${syncReport.stored.toLocaleString()} stored • ${syncReport.fetched.toLocaleString()} fetched`),
+        syncProgress && syncProgress.total_batches > 0 && createElement('span', {
+          key: 'progress-info',
+          style: { padding: '4px 8px', border: '1px solid #f59e0b', borderRadius: '4px', fontSize: '14px', backgroundColor: '#fffbeb', color: '#92400e' }
+        }, `Batch ${syncProgress.batch}/${syncProgress.total_batches} (${syncProgress.fetched.toLocaleString()} fetched)`)
+      ]),
+      // Progress Bar
+      syncProgress && syncProgress.total_batches > 0 && createElement('div', {
+        key: 'progress-container',
+        style: { marginTop: '16px' }
+      }, [
+        createElement(ProgressBarComponent, {
+          key: 'progress-bar',
+          value: Math.min(100, Math.round((syncProgress.batch / syncProgress.total_batches) * 100)),
+          type: 'Linear',
+          height: '8px',
+          cornerRadius: 'Circular'
+        })
+      ])
+    ]),
 
-        {/* Progress Bar */}
-        {syncProgress && syncProgress.total_batches > 0 && (
-          <Box sx={{ mt: 2 }}>
-            <LinearProgress
-              variant="determinate"
-              value={Math.min(100, Math.round((syncProgress.batch / syncProgress.total_batches) * 100))}
-              sx={{ height: 8, borderRadius: 4 }}
-            />
-          </Box>
-        )}
-      </Paper>
-
-      {/* Tabs */}
-      <Paper sx={{ mb: 2 }}>
-        <Tabs
-          value={activeTab}
-          onChange={(_, newValue) => setActiveTab(newValue)}
-          aria-label="Mailbox views"
-          sx={{
-            '& .MuiTab-root': {
-              minHeight: 64,
-              textTransform: 'none',
-            }
-          }}
-        >
-          {tabs.map((tab) => (
-            <Tab
-              key={tab.key}
-              value={tab.key}
-              icon={getTabIcon(tab.key)}
-              iconPosition="start"
-              label={
-                <Box>
-                  <Typography variant="body1">{tab.label}</Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    {tab.description}
-                  </Typography>
-                </Box>
-              }
-            />
-          ))}
-        </Tabs>
-      </Paper>
-
-      {/* Tab Content */}
-      <Box sx={{ flex: 1, overflow: 'hidden' }}>
-        {activeTab === "recent" && (
-          <EmailList emails={emails} messageInsights={messageInsights} />
-        )}
-        {activeTab === "senders" && (
-          <SenderGrid
-            senderGroups={senderGroups}
-            expandedSenderForAccount={expandedSenderForAccount}
-            onToggleExpansion={onToggleExpansion}
-            onStatusChange={onStatusChange}
-            statusUpdating={statusUpdating}
-            onDeleteMessage={onDeleteMessage}
-            pendingDeleteUid={pendingDeleteUid}
-          />
-        )}
-      </Box>
-    </Box>
-  );
+    // Tabs
+    createElement('div', { key: 'tabs', style: { marginBottom: '16px', backgroundColor: '#ffffff', borderRadius: '8px' } }, [
+      createElement(TabComponent, {
+        key: 'tab-component',
+        selectedItem: activeTab === 'recent' ? 0 : 1,
+        selecting: (args: any) => setActiveTab(args.selectingItem === 0 ? 'recent' : 'senders')
+      }, [
+        createElement(TabItemsDirective, { key: 'tab-items' }, [
+          createElement(TabItemDirective, {
+            key: 'recent-tab',
+            header: { text: `${getTabIcon('recent')} Recent`, iconCss: '' },
+            content: () => createElement(EmailList, { emails, messageInsights })
+          }),
+          createElement(TabItemDirective, {
+            key: 'senders-tab',
+            header: { text: `${getTabIcon('senders')} Senders`, iconCss: '' },
+            content: () => createElement(SenderGrid, {
+              senderGroups,
+              expandedSenderForAccount,
+              onToggleExpansion,
+              onStatusChange,
+              statusUpdating,
+              onDeleteMessage,
+              pendingDeleteUid
+            })
+          })
+        ])
+      ])
+    ])
+  ]);
 }

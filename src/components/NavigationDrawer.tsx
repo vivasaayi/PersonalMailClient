@@ -1,25 +1,5 @@
 import React from 'react';
-import {
-  Drawer,
-  List,
-  ListItem,
-  ListItemButton,
-  ListItemIcon,
-  ListItemText,
-  Divider,
-  Box,
-  Typography,
-  Chip,
-  Avatar,
-} from '@mui/material';
-import {
-  Inbox as InboxIcon,
-  Settings as SettingsIcon,
-  Mail as MailIcon,
-  Block as BlockIcon,
-  Sync as SyncIcon,
-  Tune as TuneIcon,
-} from '@mui/icons-material';
+import { createElement } from 'react';
 import type { Account } from '../types';
 
 const DRAWER_WIDTH = 280;
@@ -45,162 +25,213 @@ export default function NavigationDrawer({
     {
       id: 'mailbox',
       label: 'Mailbox',
-      icon: <InboxIcon />,
+      icon: '📬',
       disabled: !selectedAccount,
     },
     {
       id: 'automation',
       label: 'Automation',
-      icon: <TuneIcon />,
+      icon: '⚙️',
       disabled: !selectedAccount,
     },
     {
       id: 'sync',
       label: 'Sync Settings',
-      icon: <SyncIcon />,
+      icon: '🔄',
       disabled: !selectedAccount,
     },
     {
       id: 'blocked',
       label: 'Blocked Senders',
-      icon: <BlockIcon />,
+      icon: '🚫',
       disabled: !selectedAccount,
     },
     {
       id: 'settings',
       label: 'Settings',
-      icon: <SettingsIcon />,
+      icon: '🔧',
       disabled: false,
     },
   ];
 
-  return (
-    <Drawer
-      variant="persistent"
-      anchor="left"
-      open={open}
-      sx={{
-        width: open ? DRAWER_WIDTH : 0,
-        flexShrink: 0,
-        transition: (theme) =>
-          theme.transitions.create('width', {
-            easing: theme.transitions.easing.sharp,
-            duration: theme.transitions.duration.shortest,
-          }),
-        '& .MuiDrawer-paper': {
-          width: DRAWER_WIDTH,
-          boxSizing: 'border-box',
-          borderRight: '1px solid',
-          borderRightColor: 'divider',
-        },
-      }}
-    >
-      <Box sx={{ p: 2, borderBottom: '1px solid', borderBottomColor: 'divider' }}>
-        <Typography variant="h6" component="div" sx={{ fontWeight: 'bold' }}>
-          Personal Mail Client
-        </Typography>
-        <Typography variant="caption" color="text.secondary">
-          Enterprise Email Management
-        </Typography>
-      </Box>
+  return createElement('div', {
+    style: {
+      width: open ? DRAWER_WIDTH : 0,
+      height: '100%',
+      backgroundColor: '#ffffff',
+      borderRight: '1px solid #e5e7eb',
+      overflow: 'hidden',
+      transition: 'width 0.2s ease-in-out'
+    }
+  }, [
+    // Header
+    createElement('div', {
+      key: 'header',
+      style: {
+        padding: '16px',
+        borderBottom: '1px solid #e5e7eb'
+      }
+    }, [
+      createElement('h1', {
+        key: 'title',
+        style: {
+          fontSize: '1.25rem',
+          fontWeight: 'bold',
+          margin: '0 0 4px 0'
+        }
+      }, 'Personal Mail Client'),
+      createElement('p', {
+        key: 'subtitle',
+        style: {
+          fontSize: '0.75rem',
+          color: '#6b7280',
+          margin: 0
+        }
+      }, 'Enterprise Email Management')
+    ]),
 
-      {/* Accounts Section */}
-      <Box sx={{ p: 2 }}>
-        <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 'medium' }}>
-          Connected Accounts
-        </Typography>
-        <List dense>
-          {accounts.length === 0 ? (
-            <ListItem>
-              <ListItemText
-                primary={
-                  <Typography variant="body2" color="text.secondary">
-                    No accounts connected
-                  </Typography>
+    // Accounts Section
+    createElement('div', { key: 'accounts-section', style: { padding: '16px' } }, [
+      createElement('h3', {
+        key: 'accounts-title',
+        style: {
+          fontSize: '0.875rem',
+          fontWeight: '500',
+          margin: '0 0 8px 0'
+        }
+      }, 'Connected Accounts'),
+      createElement('ul', {
+        key: 'accounts-list',
+        style: { listStyle: 'none', padding: 0, margin: 0 }
+      }, accounts.length === 0 ? [
+        createElement('li', { key: 'no-accounts', style: { padding: '8px 0' } }, [
+          createElement('span', {
+            key: 'no-accounts-text',
+            style: { fontSize: '0.875rem', color: '#6b7280' }
+          }, 'No accounts connected')
+        ])
+      ] : accounts.map(account =>
+        createElement('li', {
+          key: account.email,
+          style: { marginBottom: '4px' }
+        }, [
+          createElement('button', {
+            key: 'account-button',
+            style: {
+              width: '100%',
+              padding: '8px 12px',
+              border: 'none',
+              borderRadius: '4px',
+              backgroundColor: selectedAccount === account.email ? '#eff6ff' : 'transparent',
+              textAlign: 'left',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center'
+            },
+            onClick: () => onAccountSelect(account.email)
+          }, [
+            createElement('div', {
+              key: 'account-avatar',
+              style: {
+                width: '24px',
+                height: '24px',
+                borderRadius: '50%',
+                backgroundColor: '#3b82f6',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: '#ffffff',
+                fontSize: '12px',
+                marginRight: '12px'
+              }
+            }, '✉️'),
+            createElement('div', { key: 'account-text', style: { flex: 1 } }, [
+              createElement('div', {
+                key: 'account-name',
+                style: {
+                  fontSize: '0.875rem',
+                  fontWeight: '500',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis'
                 }
-              />
-            </ListItem>
-          ) : (
-            accounts.map((account) => (
-              <ListItem key={account.email} disablePadding>
-                <ListItemButton
-                  selected={selectedAccount === account.email}
-                  onClick={() => onAccountSelect(account.email)}
-                  sx={{ borderRadius: 1, mx: 1, mb: 0.5 }}
-                >
-                  <ListItemIcon sx={{ minWidth: 40 }}>
-                    <Avatar sx={{ width: 24, height: 24 }}>
-                      <MailIcon sx={{ fontSize: 16 }} />
-                    </Avatar>
-                  </ListItemIcon>
-                  <ListItemText
-                    primary={
-                      <Typography variant="body2" noWrap>
-                        {account.display_name || account.email}
-                      </Typography>
-                    }
-                    secondary={
-                      <Typography variant="caption" color="text.secondary" noWrap>
-                        {account.email}
-                      </Typography>
-                    }
-                  />
-                  {selectedAccount === account.email && (
-                    <Chip
-                      label="Active"
-                      size="small"
-                      color="primary"
-                      variant="outlined"
-                      sx={{ fontSize: '0.7rem', height: 20 }}
-                    />
-                  )}
-                </ListItemButton>
-              </ListItem>
-            ))
-          )}
-        </List>
-      </Box>
+              }, account.display_name || account.email),
+              createElement('div', {
+                key: 'account-email',
+                style: {
+                  fontSize: '0.75rem',
+                  color: '#6b7280',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis'
+                }
+              }, account.email)
+            ]),
+            selectedAccount === account.email && createElement('span', {
+              key: 'active-chip',
+              style: {
+                padding: '2px 6px',
+                border: '1px solid #3b82f6',
+                borderRadius: '4px',
+                fontSize: '0.7rem',
+                backgroundColor: '#3b82f6',
+                color: '#ffffff'
+              }
+            }, 'Active')
+          ])
+        ])
+      ))
+    ]),
 
-      <Divider />
+    // Divider
+    createElement('hr', { key: 'divider1', style: { border: 'none', borderTop: '1px solid #e5e7eb', margin: 0 } }),
 
-      {/* Navigation Menu */}
-      <Box sx={{ flex: 1 }}>
-        <List>
-          {menuItems.map((item) => (
-            <ListItem key={item.id} disablePadding>
-              <ListItemButton
-                selected={currentView === item.id}
-                disabled={item.disabled}
-                onClick={() => onNavigate(item.id)}
-                sx={{ mx: 1, mb: 0.5, borderRadius: 1 }}
-              >
-                <ListItemIcon sx={{ color: item.disabled ? 'text.disabled' : 'inherit' }}>
-                  {item.icon}
-                </ListItemIcon>
-                <ListItemText
-                  primary={
-                    <Typography
-                      variant="body2"
-                      color={item.disabled ? 'text.disabled' : 'text.primary'}
-                    >
-                      {item.label}
-                    </Typography>
-                  }
-                />
-              </ListItemButton>
-            </ListItem>
-          ))}
-        </List>
-      </Box>
+    // Navigation Menu
+    createElement('div', { key: 'nav-menu', style: { flex: 1 } }, [
+      createElement('ul', {
+        key: 'nav-list',
+        style: { listStyle: 'none', padding: '8px 0', margin: 0 }
+      }, menuItems.map(item =>
+        createElement('li', { key: item.id, style: { marginBottom: '4px' } }, [
+          createElement('button', {
+            key: 'nav-button',
+            style: {
+              width: '100%',
+              padding: '8px 16px',
+              border: 'none',
+              borderRadius: '4px',
+              backgroundColor: currentView === item.id ? '#eff6ff' : 'transparent',
+              color: item.disabled ? '#9ca3af' : '#000000',
+              textAlign: 'left',
+              cursor: item.disabled ? 'not-allowed' : 'pointer',
+              display: 'flex',
+              alignItems: 'center'
+            },
+            disabled: item.disabled,
+            onClick: () => onNavigate(item.id)
+          }, [
+            createElement('span', {
+              key: 'nav-icon',
+              style: { marginRight: '12px', fontSize: '16px' }
+            }, item.icon),
+            createElement('span', {
+              key: 'nav-label',
+              style: { fontSize: '0.875rem' }
+            }, item.label)
+          ])
+        ])
+      ))
+    ]),
 
-      <Divider />
+    // Divider
+    createElement('hr', { key: 'divider2', style: { border: 'none', borderTop: '1px solid #e5e7eb', margin: 0 } }),
 
-      {/* Footer */}
-      <Box sx={{ p: 2 }}>
-        <Typography variant="caption" color="text.secondary" textAlign="center" display="block">
-          v1.0.0
-        </Typography>
-      </Box>
-    </Drawer>
-  );
+    // Footer
+    createElement('div', { key: 'footer', style: { padding: '16px', textAlign: 'center' } }, [
+      createElement('span', {
+        key: 'version',
+        style: { fontSize: '0.75rem', color: '#6b7280' }
+      }, 'v1.0.0')
+    ])
+  ]);
 }
