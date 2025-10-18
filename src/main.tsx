@@ -3,6 +3,8 @@ import ReactDOM from "react-dom/client";
 import { registerLicense } from "@syncfusion/ej2-base";
 import App from "./App";
 import { AppThemeProvider } from "./theme";
+import { AccountsProvider } from "./stores/accountsStore";
+import { NotificationsProvider } from "./stores/notifications";
 import "@syncfusion/ej2-base/styles/material.css";
 import "@syncfusion/ej2-buttons/styles/material.css";
 import "@syncfusion/ej2-inputs/styles/material.css";
@@ -23,7 +25,11 @@ if (syncfusionLicenseKey) {
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <AppThemeProvider>
-      <App />
+      <NotificationsProvider>
+        <AccountsProvider>
+          <App />
+        </AccountsProvider>
+      </NotificationsProvider>
     </AppThemeProvider>
   </React.StrictMode>
 );

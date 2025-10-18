@@ -4,6 +4,8 @@ import ReactDOM from "react-dom/client";
 import { registerLicense } from "@syncfusion/ej2-base";
 import App from "./App";
 import { AppThemeProvider } from "./theme";
+import { AccountsProvider } from "./stores/accountsStore";
+import { NotificationsProvider } from "./stores/notifications";
 import "@syncfusion/ej2-base/styles/material.css";
 import "@syncfusion/ej2-buttons/styles/material.css";
 import "@syncfusion/ej2-inputs/styles/material.css";
@@ -20,4 +22,4 @@ else if (import.meta.env.DEV) {
     // eslint-disable-next-line no-console
     console.warn("Syncfusion license key not found. Set VITE_SYNCFUSION_LICENSE for production builds.");
 }
-ReactDOM.createRoot(document.getElementById("root")).render(_jsx(React.StrictMode, { children: _jsx(AppThemeProvider, { children: _jsx(App, {}) }) }));
+ReactDOM.createRoot(document.getElementById("root")).render(_jsx(React.StrictMode, { children: _jsx(AppThemeProvider, { children: _jsx(NotificationsProvider, { children: _jsx(AccountsProvider, { children: _jsx(App, {}) }) }) }) }));

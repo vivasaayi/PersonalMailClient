@@ -4,6 +4,7 @@ use std::{
     sync::Arc,
 };
 
+use crate::models::{Account, Provider};
 use aes_gcm::{
     aead::{generic_array::typenum::Unsigned, Aead, AeadCore, KeyInit, OsRng},
     Aes256Gcm, Nonce,
@@ -13,7 +14,6 @@ use chrono::Utc;
 use once_cell::sync::OnceCell;
 use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
-use crate::models::{Account, Provider};
 use secrecy::{ExposeSecret, SecretVec};
 use serde_json;
 use sha2::{Digest, Sha256};
@@ -459,7 +459,7 @@ impl Storage {
         let conn = self.conn.clone();
         let cipher = self.cipher.clone();
         let account = account_email.to_owned();
-    let limit = limit.min(100_000);
+        let limit = limit.min(100_000);
 
         let result = tokio::task::spawn_blocking(move || -> Result<Vec<CachedMessageSummary>> {
             let conn = conn.lock();

@@ -1,25 +1,38 @@
-import React from 'react';
 import { createElement } from 'react';
 import type { Account } from '../types';
+import type { AccountLifecycleStatus, AccountRuntimeState } from '../stores/accountsStore';
 
 const DRAWER_WIDTH = 280;
 
 interface NavigationDrawerProps {
   open: boolean;
   accounts: Account[];
+  runtimeByEmail: Record<string, AccountRuntimeState>;
   selectedAccount: string | null;
   onAccountSelect: (email: string | null) => void;
   onNavigate: (view: string) => void;
   currentView: string;
+  onOpenSavedAccounts: () => void;
+  hasSavedAccounts: boolean;
 }
+
+const STATUS_META: Record<AccountLifecycleStatus, { label: string; color: string }> = {
+  idle: { label: 'Idle', color: '#047857' },
+  connecting: { label: 'Connecting…', color: '#1d4ed8' },
+  syncing: { label: 'Syncing…', color: '#4338ca' },
+  error: { label: 'Needs attention', color: '#b91c1c' }
+};
 
 export default function NavigationDrawer({
   open,
   accounts,
+  runtimeByEmail,
   selectedAccount,
   onAccountSelect,
   onNavigate,
   currentView,
+  onOpenSavedAccounts,
+  hasSavedAccounts
 }: NavigationDrawerProps) {
   const menuItems = [
     {
@@ -27,6 +40,12 @@ export default function NavigationDrawer({
       label: 'Mailbox',
       icon: '📬',
       disabled: !selectedAccount,
+    },
+    {
+      id: 'accounts',
+      label: 'Accounts',
+      icon: '👥',
+      disabled: false,
     },
     {
       id: 'automation',
@@ -110,8 +129,14 @@ export default function NavigationDrawer({
             style: { fontSize: '0.875rem', color: '#6b7280' }
           }, 'No accounts connected')
         ])
-      ] : accounts.map(account =>
-        createElement('li', {
+      ] : accounts.map(account => {
+        const normalizedEmail = account.email.trim().toLowerCase();
+        const runtime = runtimeByEmail[normalizedEmail];
+        const status = runtime?.status ?? 'idle';
+        const statusMeta = STATUS_META[status];
+        const isActive = selectedAccount === account.email;
+
+        return createElement('li', {
           key: account.email,
           style: { marginBottom: '4px' }
         }, [
@@ -122,7 +147,7 @@ export default function NavigationDrawer({
               padding: '8px 12px',
               border: 'none',
               borderRadius: '4px',
-              backgroundColor: selectedAccount === account.email ? '#eff6ff' : 'transparent',
+              backgroundColor: isActive ? '#eff6ff' : 'transparent',
               textAlign: 'left',
               cursor: 'pointer',
               display: 'flex',
@@ -165,9 +190,31 @@ export default function NavigationDrawer({
                   overflow: 'hidden',
                   textOverflow: 'ellipsis'
                 }
-              }, account.email)
+              }, account.email),
+              createElement('div', {
+                key: 'account-status',
+                style: {
+                  marginTop: '4px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontSize: '0.75rem',
+                  color: statusMeta.color
+                }
+              }, [
+                createElement('span', {
+                  key: 'status-dot',
+                  style: {
+                    width: '8px',
+                    height: '8px',
+                    borderRadius: '50%',
+                    backgroundColor: statusMeta.color
+                  }
+                }),
+                statusMeta.label
+              ])
             ]),
-            selectedAccount === account.email && createElement('span', {
+            isActive && createElement('span', {
               key: 'active-chip',
               style: {
                 padding: '2px 6px',
@@ -179,8 +226,26 @@ export default function NavigationDrawer({
               }
             }, 'Active')
           ])
-        ])
-      ))
+        ]);
+      })),
+      createElement('button', {
+        key: 'saved-accounts-trigger',
+        style: {
+          width: '100%',
+          marginTop: '12px',
+          padding: '10px 12px',
+          borderRadius: '6px',
+          border: hasSavedAccounts ? '1px solid #2563eb' : '1px solid #d1d5db',
+          backgroundColor: hasSavedAccounts ? '#2563eb' : '#f3f4f6',
+          color: hasSavedAccounts ? '#ffffff' : '#1f2937',
+          fontSize: '0.85rem',
+          fontWeight: 600,
+          cursor: 'pointer',
+          transition: 'background-color 0.2s ease, color 0.2s ease'
+        },
+        onClick: onOpenSavedAccounts,
+        title: hasSavedAccounts ? 'Open saved accounts' : 'No saved accounts yet — connect one to quick-launch here'
+      }, 'Saved Accounts')
     ]),
 
     // Divider

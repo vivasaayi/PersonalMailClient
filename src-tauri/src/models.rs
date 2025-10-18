@@ -94,7 +94,13 @@ pub struct Credentials {
 }
 
 impl Credentials {
-    pub fn new(provider: Provider, email: String, password: String, custom_host: Option<String>, custom_port: Option<u16>) -> Self {
+    pub fn new(
+        provider: Provider,
+        email: String,
+        password: String,
+        custom_host: Option<String>,
+        custom_port: Option<u16>,
+    ) -> Self {
         Self {
             provider,
             email,

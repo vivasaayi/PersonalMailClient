@@ -3,16 +3,16 @@
     windows_subsystem = "windows"
 )]
 
+use keyring::{Entry, Error as KeyringError};
 use oauth2::{
     AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge, RedirectUrl, Scope, TokenResponse,
 };
 use personal_mail_client::models::{
-    AppState, ConnectAccountResponse, Credentials, EmailSummary, MailAddress, Provider, SavedAccount,
-    SyncHandle, SyncReport,
+    AppState, ConnectAccountResponse, Credentials, EmailSummary, MailAddress, Provider,
+    SavedAccount, SyncHandle, SyncReport,
 };
 use personal_mail_client::providers::{self, ProviderError};
 use personal_mail_client::storage::{AnalysisInsert, MessageInsert, SenderStatus, Storage};
-use keyring::{Entry, Error as KeyringError};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::process::Command;
@@ -81,9 +81,7 @@ fn store_password_in_keychain(email: &str, password: &str) -> Result<(), String>
     }
 
     let entry = keychain_entry(email)?;
-    entry
-        .set_password(password)
-        .map_err(|err| err.to_string())
+    entry.set_password(password).map_err(|err| err.to_string())
 }
 
 fn fetch_password_from_keychain(email: &str) -> Result<Option<String>, String> {
@@ -136,7 +134,10 @@ fn delete_password_from_keychain(email: &str) -> Result<(), String> {
     }
 }
 
-async fn perform_connect(state: &AppState, credentials: Credentials) -> Result<ConnectAccountResponse, String> {
+async fn perform_connect(
+    state: &AppState,
+    credentials: Credentials,
+) -> Result<ConnectAccountResponse, String> {
     let normalized_email = credentials.email.clone();
     let provider = credentials.provider;
     info!(%normalized_email, ?provider, "connecting account");
@@ -254,6 +255,44 @@ async fn connect_account_saved(
     }
 
     Ok(response)
+}
+
+#[tauri::command]
+async fn test_account_connection(
+    state: State<'_, AppState>,
+    provider: Provider,
+    email: String,
+    password: Option<String>,
+    custom_host: Option<String>,
+    custom_port: Option<u16>,
+) -> Result<(), String> {
+    if email.trim().is_empty() {
+        return Err("Email address is required".into());
+    }
+
+    let normalized_email = email.trim().to_lowercase();
+
+    let password_value = match password {
+        Some(value) if !value.trim().is_empty() => value,
+        _ => fetch_password_from_keychain(&normalized_email)?.ok_or_else(|| {
+            "No password available. Provide an app password or connect once to store it."
+                .to_string()
+        })?,
+    };
+
+    let credentials = Credentials::new(
+        provider,
+        normalized_email,
+        password_value,
+        custom_host,
+        custom_port,
+    );
+
+    providers::verify_credentials(&credentials)
+        .await
+        .map_err(provider_error_to_message)?;
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -452,12 +491,7 @@ async fn sync_account_full(
 
     state
         .storage
-        .update_sync_state(
-            &normalized_email,
-            latest_uid.as_deref(),
-            true,
-            total_stored,
-        )
+        .update_sync_state(&normalized_email, latest_uid.as_deref(), true, total_stored)
         .await
         .map_err(|err| err.to_string())?;
 
@@ -1158,6 +1192,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             connect_account,
             connect_account_saved,
+            test_account_connection,
             list_saved_accounts,
             get_saved_password,
             fetch_recent,

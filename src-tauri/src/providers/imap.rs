@@ -8,6 +8,14 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::{self, JoinHandle};
 use tracing::info;
 
+pub async fn verify_credentials(credentials: &Credentials) -> Result<(), ProviderError> {
+    let credentials = credentials.clone();
+
+    task::spawn_blocking(move || verify_credentials_blocking(credentials))
+        .await
+        .map_err(|err| ProviderError::Other(format!("Background task failure: {err}")))?
+}
+
 pub async fn fetch_recent(
     credentials: &Credentials,
     limit: usize,
@@ -24,12 +32,19 @@ pub async fn fetch_all(
     credentials: &Credentials,
     since_uid: Option<u32>,
     chunk_size: usize,
-) -> Result<(UnboundedReceiver<BatchResult>, JoinHandle<Result<(), ProviderError>>), ProviderError> {
+) -> Result<
+    (
+        UnboundedReceiver<BatchResult>,
+        JoinHandle<Result<(), ProviderError>>,
+    ),
+    ProviderError,
+> {
     let credentials = credentials.clone();
     let chunk = chunk_size.clamp(50, 1000);
     let (tx, rx) = unbounded_channel();
 
-    let handle = task::spawn_blocking(move || fetch_all_blocking(credentials, since_uid, chunk, tx));
+    let handle =
+        task::spawn_blocking(move || fetch_all_blocking(credentials, since_uid, chunk, tx));
 
     Ok((rx, handle))
 }
@@ -61,7 +76,10 @@ fn fetch_recent_blocking(
     credentials: Credentials,
     limit: usize,
 ) -> Result<Vec<EmailSummary>, ProviderError> {
-    let domain = credentials.custom_host.as_deref().unwrap_or_else(|| credentials.provider.imap_host());
+    let domain = credentials
+        .custom_host
+        .as_deref()
+        .unwrap_or_else(|| credentials.provider.imap_host());
     let port = credentials.custom_port.unwrap_or(993);
     let tls = TlsConnector::builder()
         .build()
@@ -107,13 +125,41 @@ fn fetch_recent_blocking(
     Ok(emails)
 }
 
+fn verify_credentials_blocking(credentials: Credentials) -> Result<(), ProviderError> {
+    let domain = credentials
+        .custom_host
+        .as_deref()
+        .unwrap_or_else(|| credentials.provider.imap_host());
+    let port = credentials.custom_port.unwrap_or(993);
+    let tls = TlsConnector::builder()
+        .build()
+        .map_err(|err| ProviderError::Network(err.to_string()))?;
+    let client = ::imap::connect((domain, port), domain, &tls)
+        .map_err(|err| ProviderError::Network(err.to_string()))?;
+
+    let mut session = match client.login(&credentials.email, &credentials.password) {
+        Ok(session) => session,
+        Err((err, _client)) => {
+            return Err(ProviderError::Authentication(err.to_string()));
+        }
+    };
+
+    // Ensure the inbox can be selected to validate permissions.
+    session.select("INBOX")?;
+    session.logout()?;
+    Ok(())
+}
+
 fn fetch_all_blocking(
     credentials: Credentials,
     since_uid: Option<u32>,
     chunk_size: usize,
     tx: UnboundedSender<BatchResult>,
 ) -> Result<(), ProviderError> {
-    let domain = credentials.custom_host.as_deref().unwrap_or_else(|| credentials.provider.imap_host());
+    let domain = credentials
+        .custom_host
+        .as_deref()
+        .unwrap_or_else(|| credentials.provider.imap_host());
     let port = credentials.custom_port.unwrap_or(993);
     let tls = TlsConnector::builder()
         .build()
@@ -133,7 +179,7 @@ fn fetch_all_blocking(
     let uids = session.uid_search("ALL")?;
     if uids.is_empty() {
         session.logout()?;
-    return Ok(());
+        return Ok(());
     }
 
     let mut sorted = uids.into_iter().collect::<Vec<_>>();
@@ -214,7 +260,10 @@ fn fetch_all_blocking(
 }
 
 fn delete_message_blocking(credentials: Credentials, uid: String) -> Result<(), ProviderError> {
-    let domain = credentials.custom_host.as_deref().unwrap_or_else(|| credentials.provider.imap_host());
+    let domain = credentials
+        .custom_host
+        .as_deref()
+        .unwrap_or_else(|| credentials.provider.imap_host());
     let port = credentials.custom_port.unwrap_or(993);
     let tls = TlsConnector::builder()
         .build()
@@ -243,7 +292,10 @@ fn move_blocked_blocking(
         return Ok(0);
     }
 
-    let domain = credentials.custom_host.as_deref().unwrap_or_else(|| credentials.provider.imap_host());
+    let domain = credentials
+        .custom_host
+        .as_deref()
+        .unwrap_or_else(|| credentials.provider.imap_host());
     let port = credentials.custom_port.unwrap_or(993);
     let tls = TlsConnector::builder()
         .build()

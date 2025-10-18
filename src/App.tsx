@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/tauri";
 import { appWindow } from "@tauri-apps/api/window";
 import { ButtonComponent } from '@syncfusion/ej2-react-buttons';
 import { createElement } from 'react';
+import { invoke } from "@tauri-apps/api/tauri";
+
+import { useAccountsStore } from "./stores/accountsStore";
 
 import type {
   Account,
@@ -17,9 +19,14 @@ import type {
 } from "./types";
 import NavigationDrawer from "./components/NavigationDrawer";
 import ConnectionWizard from "./components/ConnectionWizard";
+import SavedAccountsDialog from "./components/SavedAccountsDialog";
 import Mailbox from "./components/Mailbox";
 import SettingsView from "./components/SettingsView";
 import AutomationView from "./components/AutomationView";
+import AccountsView from "./components/AccountsView";
+import NotificationsHost from "./components/NotificationsHost";
+import { useNotifications } from "./stores/notifications";
+import { buildSyncStatusPills } from "./utils/mailboxStatus";
 
 const providerLabels: Record<Provider, string> = {
   gmail: "Gmail",
@@ -31,17 +38,28 @@ const providerLabels: Record<Provider, string> = {
 const MIN_CACHE_FETCH = 1_000;
 const MAX_CACHE_FETCH = 50_000;
 
+const errorMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
 export default function App() {
-  const [accounts, setAccounts] = useState<Account[]>([]);
+  const {
+    accounts,
+    savedAccounts,
+    connectingSavedEmail,
+    runtimeByEmail,
+    setAccountStatus,
+    setAccountLastSync,
+    refreshSavedAccounts,
+    connectSavedAccount: connectSavedAccountAction,
+    disconnectAccount: disconnectAccountAction,
+    upsertAccount
+  } = useAccountsStore();
+  const { notifyError, notifyInfo, notifySuccess } = useNotifications();
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null);
   const [emailsByAccount, setEmailsByAccount] = useState<Record<string, EmailSummary[]>>({});
   const [cachedCountsByAccount, setCachedCountsByAccount] = useState<Record<string, number>>({});
   const [senderGroupsByAccount, setSenderGroupsByAccount] = useState<Record<string, SenderGroup[]>>({});
-  const [savedAccounts, setSavedAccounts] = useState<SavedAccount[]>([]);
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [info, setInfo] = useState<string | null>(null);
+  const [refreshingAccount, setRefreshingAccount] = useState<string | null>(null);
   const [expandedSenders, setExpandedSenders] = useState<Record<string, string | null>>({});
   const [statusUpdating, setStatusUpdating] = useState<string | null>(null);
   const [pendingDeleteUid, setPendingDeleteUid] = useState<string | null>(null);
@@ -51,7 +69,6 @@ export default function App() {
   const [isSavingPeriodic, setIsSavingPeriodic] = useState(false);
   const [isApplyingBlockFilter, setIsApplyingBlockFilter] = useState(false);
   const [blockFolder, setBlockFolder] = useState<string>("Blocked");
-  const [connectingSavedEmail, setConnectingSavedEmail] = useState<string | null>(null);
   const maxCachedItemsByAccount = useRef<Record<string, number>>({});
   const cachedCountRef = useRef<Record<string, number>>({});
   const emailListRef = useRef<HTMLElement>(null);
@@ -60,6 +77,7 @@ export default function App() {
   const [drawerOpen, setDrawerOpen] = useState(true);
   const [currentView, setCurrentView] = useState<string>('mailbox');
   const [connectionWizardOpen, setConnectionWizardOpen] = useState(false);
+  const [savedAccountsDialogOpen, setSavedAccountsDialogOpen] = useState(false);
 
   const currentEmails = useMemo(() => {
     if (!selectedAccount) {
@@ -114,10 +132,10 @@ export default function App() {
         });
       } catch (err) {
         console.error(err);
-        setError(err instanceof Error ? err.message : String(err));
+        notifyError(errorMessage(err));
       }
     },
-    []
+    [notifyError]
   );
 
   const recordCachedCount = useCallback((accountEmail: string, count: number) => {
@@ -142,22 +160,21 @@ export default function App() {
         return count;
       } catch (err) {
         console.error(err);
-        setError(err instanceof Error ? err.message : String(err));
+        notifyError(errorMessage(err));
         return undefined;
       }
     },
-    [recordCachedCount]
+    [recordCachedCount, notifyError]
   );
 
   const loadSavedAccounts = useCallback(async () => {
     try {
-      const saved = await invoke<SavedAccount[]>("list_saved_accounts");
-      setSavedAccounts(saved);
+      await refreshSavedAccounts();
     } catch (err) {
       console.error(err);
-      setError(err instanceof Error ? err.message : String(err));
+      notifyError(errorMessage(err));
     }
-  }, []);
+  }, [refreshSavedAccounts, notifyError]);
 
   useEffect(() => {
     loadSavedAccounts().catch((err) => {
@@ -185,7 +202,6 @@ export default function App() {
             100,
             Math.round((payload.batch / payload.total_batches) * 100)
           );
-          setInfo(`Full sync in progress… ${percent}% (${payload.fetched.toLocaleString()} messages)`);
           const progressLimit = Math.max(
             maxCachedItemsByAccount.current[payload.email] ?? 0,
             payload.total_batches > 0 ? payload.total_batches * 50 : payload.fetched,
@@ -219,6 +235,20 @@ export default function App() {
   const totalCachedCount = selectedAccount
     ? cachedCountsByAccount[selectedAccount] ?? currentEmails.length
     : currentEmails.length;
+  const selectedAccountEntity = selectedAccount
+    ? accounts.find((acct) => acct.email === selectedAccount) ?? null
+    : null;
+
+  const selectedAccountStatusPills = selectedAccount
+    ? buildSyncStatusPills({
+        isSyncing,
+        isRefreshing: refreshingAccount === selectedAccount,
+        syncReport,
+        syncProgress,
+        emailsCount: currentEmails.length,
+        totalKnownMessages: totalCachedCount
+      })
+    : [];
 
   const loadSenderGroups = useCallback(
     async (accountEmail: string) => {
@@ -275,10 +305,10 @@ export default function App() {
         }
       } catch (err) {
         console.error(err);
-        setError(err instanceof Error ? err.message : String(err));
+        notifyError(errorMessage(err));
       }
     },
-    [expandedSenders]
+    [expandedSenders, notifyError]
   );
 
   const refreshEmailsForAccount = useCallback(
@@ -288,9 +318,9 @@ export default function App() {
         return;
       }
       if (showToast) {
-        setInfo("Checking for new mail...");
+        notifyInfo("Checking for new mail...");
       }
-      setError(null);
+      setAccountStatus(account.email, "syncing");
       try {
         const report = await invoke<SyncReport>("sync_account_incremental", {
           provider: account.provider,
@@ -303,11 +333,11 @@ export default function App() {
         }));
         if (showToast) {
           if (report.stored > 0) {
-            setInfo(
+            notifySuccess(
               `Fetched ${report.fetched} new message${report.fetched === 1 ? "" : "s"}.`
             );
           } else {
-            setInfo("Mailbox is up to date.");
+            notifyInfo("Mailbox is up to date.");
           }
         }
         const existingCount = maxCachedItemsByAccount.current[account.email] ?? 0;
@@ -315,25 +345,30 @@ export default function App() {
         await loadCachedEmails(account.email, fetchLimit);
         await loadSenderGroups(account.email);
         await loadCachedCount(account.email);
+        setAccountLastSync(account.email, Date.now());
+        setAccountStatus(account.email, "idle");
       } catch (err) {
         console.error(err);
-        setError(err instanceof Error ? err.message : String(err));
+        notifyError(errorMessage(err));
+        setAccountStatus(account.email, "error");
       }
     },
-    [accounts, loadCachedEmails, loadSenderGroups, loadCachedCount]
+    [
+      accounts,
+      loadCachedEmails,
+      loadSenderGroups,
+      loadCachedCount,
+      notifyError,
+      notifyInfo,
+      notifySuccess,
+      setAccountStatus,
+      setAccountLastSync
+    ]
   );
 
   const applyConnectResponse = useCallback(
     async (payload: ConnectAccountResponse) => {
-      setAccounts((prev: Account[]) => {
-        const exists = prev.some((acct: Account) => acct.email === payload.account.email);
-        if (exists) {
-          return prev.map((acct: Account) =>
-            acct.email === payload.account.email ? payload.account : acct
-          );
-        }
-        return [...prev, payload.account];
-      });
+      upsertAccount(payload.account);
 
       setEmailsByAccount((prev: Record<string, EmailSummary[]>) => ({
         ...prev,
@@ -348,8 +383,32 @@ export default function App() {
       await loadCachedCount(payload.account.email);
 
       setSelectedAccount(payload.account.email);
+      setCurrentView('mailbox');
     },
-    [loadSenderGroups, loadCachedCount]
+    [loadSenderGroups, loadCachedCount, upsertAccount]
+  );
+
+  const handleAccountConnected = useCallback(
+    async ({
+      response,
+      source
+    }: {
+      response: ConnectAccountResponse;
+      source: "new" | "saved";
+      savedAccount?: SavedAccount;
+    }) => {
+      await applyConnectResponse(response);
+      if (source === "saved") {
+        notifySuccess(
+          `Reconnected ${response.account.email} using saved macOS keychain credentials.`
+        );
+      } else {
+        notifySuccess(
+          `Connected to ${providerLabels[response.account.provider]} as ${response.account.email}`
+        );
+      }
+    },
+    [applyConnectResponse, notifySuccess]
   );
 
   // Periodic polling for emails every 30 seconds
@@ -369,23 +428,64 @@ export default function App() {
     return () => clearInterval(interval);
   }, [selectedAccount, refreshEmailsForAccount]);
 
-  const connectSavedAccount = async (saved: SavedAccount) => {
-    setError(null);
-    setInfo(null);
-    setConnectingSavedEmail(saved.email);
+  const handleConnectSavedAccount = useCallback(
+    async (saved: SavedAccount) => {
+      try {
+        const payload = await connectSavedAccountAction(saved);
+        await handleAccountConnected({
+          response: payload,
+          source: "saved",
+          savedAccount: saved
+        });
+      } catch (err) {
+        console.error(err);
+        notifyError(errorMessage(err));
+      }
+    },
+    [connectSavedAccountAction, handleAccountConnected, notifyError]
+  );
+
+  const handleRemoveAccount = async (email: string) => {
     try {
-      const payload = await invoke<ConnectAccountResponse>("connect_account_saved", {
-        provider: saved.provider,
-        email: saved.email
+      await disconnectAccountAction(email);
+      setEmailsByAccount((prev: Record<string, EmailSummary[]>) => {
+        const { [email]: _removed, ...rest } = prev;
+        return rest;
       });
-      await applyConnectResponse(payload);
-      await loadSavedAccounts();
-      setInfo(`Reconnected ${payload.account.email} using saved macOS keychain credentials.`);
+      setSenderGroupsByAccount((prev: Record<string, SenderGroup[]>) => {
+        const { [email]: _removed, ...rest } = prev;
+        return rest;
+      });
+      setCachedCountsByAccount((prev: Record<string, number>) => {
+        const { [email]: _removed, ...rest } = prev;
+        return rest;
+      });
+      setSyncReports((prev: Record<string, SyncReport | null>) => {
+        const { [email]: _removed, ...rest } = prev;
+        return rest;
+      });
+      setSyncProgressByAccount((prev: Record<string, SyncProgress | null>) => {
+        const { [email]: _removed, ...rest } = prev;
+        return rest;
+      });
+      setPeriodicMinutesByAccount((prev: Record<string, number>) => {
+        const { [email]: _removed, ...rest } = prev;
+        return rest;
+      });
+      setExpandedSenders((prev: Record<string, string | null>) => {
+        const { [email]: _removed, ...rest } = prev;
+        return rest;
+      });
+      if (selectedAccount === email) {
+        setSelectedAccount(null);
+        setCurrentView('accounts');
+      }
+      delete maxCachedItemsByAccount.current[email];
+      delete cachedCountRef.current[email];
+      notifyInfo(`Disconnected and removed ${email}.`);
     } catch (err) {
       console.error(err);
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setConnectingSavedEmail(null);
+      notifyError(errorMessage(err));
     }
   };
 
@@ -393,7 +493,13 @@ export default function App() {
     if (!selectedAccount) {
       return;
     }
-    await refreshEmailsForAccount(selectedAccount);
+    const email = selectedAccount;
+    setRefreshingAccount(email);
+    try {
+      await refreshEmailsForAccount(email);
+    } finally {
+      setRefreshingAccount((current) => (current === email ? null : current));
+    }
   };
 
   const handleFullSync = async () => {
@@ -404,8 +510,8 @@ export default function App() {
     if (!account) {
       return;
     }
-    setError(null);
-    setInfo("Running full mailbox sync...");
+    notifyInfo("Running full mailbox sync...");
+    setAccountStatus(account.email, "syncing");
     setIsSyncing(true);
     setSyncProgressByAccount((prev: Record<string, SyncProgress | null>) => ({
       ...prev,
@@ -428,7 +534,7 @@ export default function App() {
         ...prev,
         [account.email]: report
       }));
-      setInfo(
+      notifySuccess(
         `Fetched ${report.fetched} messages (${report.stored} stored) in ${(report.duration_ms / 1000).toFixed(
           1
         )}s.`
@@ -440,9 +546,12 @@ export default function App() {
       );
       await loadCachedEmails(account.email, fetchLimit);
       await loadSenderGroups(account.email);
+      setAccountLastSync(account.email, Date.now());
+      setAccountStatus(account.email, "idle");
     } catch (err) {
       console.error(err);
-      setError(err instanceof Error ? err.message : String(err));
+      notifyError(errorMessage(err));
+      setAccountStatus(account.email, "error");
     } finally {
       setIsSyncing(false);
       setSyncProgressByAccount((prev: Record<string, SyncProgress | null>) => ({
@@ -457,7 +566,6 @@ export default function App() {
       return;
     }
     setStatusUpdating(senderEmail);
-    setError(null);
     try {
       await invoke("set_sender_status", {
         senderEmail,
@@ -483,10 +591,10 @@ export default function App() {
           [selectedAccount]: updated
         };
       });
-      setInfo(`Marked ${senderEmail} as ${status}.`);
+      notifySuccess(`Marked ${senderEmail} as ${status}.`);
     } catch (err) {
       console.error(err);
-      setError(err instanceof Error ? err.message : String(err));
+      notifyError(errorMessage(err));
     } finally {
       setStatusUpdating(null);
     }
@@ -502,7 +610,6 @@ export default function App() {
     }
     const key = `${senderEmail}::${uid}`;
     setPendingDeleteUid(key);
-    setError(null);
     try {
       await invoke("delete_message_remote", {
         provider: account.provider,
@@ -536,10 +643,10 @@ export default function App() {
           [selectedAccount]: current.filter((message) => message.uid !== uid)
         };
       });
-      setInfo("Message deleted from the server and local cache.");
+      notifySuccess("Message deleted from the server and local cache.");
     } catch (err) {
       console.error(err);
-      setError(err instanceof Error ? err.message : String(err));
+      notifyError(errorMessage(err));
     } finally {
       setPendingDeleteUid(null);
     }
@@ -565,7 +672,6 @@ export default function App() {
     }
     const minutes = periodicMinutes > 0 ? periodicMinutes : null;
     setIsSavingPeriodic(true);
-    setError(null);
     try {
       await invoke("configure_periodic_sync", {
         provider: account.provider,
@@ -573,13 +679,13 @@ export default function App() {
         minutes
       });
       if (minutes) {
-        setInfo(`Periodic sync every ${minutes} minute${minutes === 1 ? "" : "s"} enabled.`);
+        notifySuccess(`Periodic sync every ${minutes} minute${minutes === 1 ? "" : "s"} enabled.`);
       } else {
-        setInfo("Periodic sync disabled.");
+        notifyInfo("Periodic sync disabled.");
       }
     } catch (err) {
       console.error(err);
-      setError(err instanceof Error ? err.message : String(err));
+      notifyError(errorMessage(err));
     } finally {
       setIsSavingPeriodic(false);
     }
@@ -594,7 +700,6 @@ export default function App() {
       return;
     }
     setIsApplyingBlockFilter(true);
-    setError(null);
     try {
       const moved = await invoke<number>("apply_block_filter", {
         provider: account.provider,
@@ -603,13 +708,13 @@ export default function App() {
       });
       await refreshEmailsForAccount(account.email, 25, false);
       if (moved > 0) {
-        setInfo(`Moved ${moved} message${moved === 1 ? "" : "s"} to ${blockFolder || "the blocked folder"}.`);
+        notifySuccess(`Moved ${moved} message${moved === 1 ? "" : "s"} to ${blockFolder || "the blocked folder"}.`);
       } else {
-        setInfo("No messages matched the blocked list.");
+        notifyInfo("No messages matched the blocked list.");
       }
     } catch (err) {
       console.error(err);
-      setError(err instanceof Error ? err.message : String(err));
+      notifyError(errorMessage(err));
     } finally {
       setIsApplyingBlockFilter(false);
     }
@@ -618,6 +723,13 @@ export default function App() {
   // Navigation handlers
   const handleDrawerToggle = () => {
     setDrawerOpen(!drawerOpen);
+  };
+
+  const handleAccountSelect = (email: string | null) => {
+    setSelectedAccount(email);
+    if (email) {
+      setCurrentView('mailbox');
+    }
   };
 
   const handleNavigate = (view: string) => {
@@ -631,6 +743,21 @@ export default function App() {
   const handleCloseConnectionWizard = () => {
     setConnectionWizardOpen(false);
   };
+
+  const handleOpenSavedAccountsDialog = () => {
+    loadSavedAccounts();
+    setSavedAccountsDialogOpen(true);
+  };
+
+  const handleCloseSavedAccountsDialog = () => {
+    setSavedAccountsDialogOpen(false);
+  };
+
+  useEffect(() => {
+    if (accounts.length === 0 && ['mailbox', 'automation', 'sync', 'blocked'].includes(currentView)) {
+      setCurrentView('accounts');
+    }
+  }, [accounts.length, currentView]);
 
   useEffect(() => {
     if (!selectedAccount) {
@@ -681,13 +808,6 @@ export default function App() {
     });
   };
 
-  const handleInfoClose = (_event?: unknown, reason?: string) => {
-    if (reason === "clickaway") {
-      return;
-    }
-    setInfo(null);
-  };
-
   return createElement('div', { style: { display: 'flex', height: '100vh' } }, [
     // Navigation Drawer
     createElement(NavigationDrawer, {
@@ -695,9 +815,12 @@ export default function App() {
       open: drawerOpen,
       accounts: accounts,
       selectedAccount: selectedAccount,
-      onAccountSelect: setSelectedAccount,
+      runtimeByEmail,
+      onAccountSelect: handleAccountSelect,
       onNavigate: handleNavigate,
-      currentView: currentView
+      currentView: currentView,
+      onOpenSavedAccounts: handleOpenSavedAccountsDialog,
+      hasSavedAccounts: savedAccounts.length > 0
     }),
 
     // Main Content
@@ -752,26 +875,8 @@ export default function App() {
         },
         ref: emailListRef
       }, [
-        // Error Alert
-        error && createElement('div', {
-          key: 'error-alert',
-          style: {
-            margin: '16px',
-            padding: '12px 16px',
-            backgroundColor: '#fef2f2',
-            border: '1px solid #fecaca',
-            borderRadius: '6px',
-            color: '#dc2626',
-            display: 'flex',
-            alignItems: 'center'
-          }
-        }, [
-          createElement('span', { key: 'error-icon', style: { marginRight: '8px' } }, '⚠️'),
-          error
-        ]),
-
         // View Content
-        currentView === 'mailbox' && selectedAccount ? createElement(Mailbox, {
+      currentView === 'mailbox' && selectedAccount ? createElement(Mailbox, {
           key: 'mailbox-view',
           selectedAccount: selectedAccount,
           accounts: accounts,
@@ -783,6 +888,7 @@ export default function App() {
           onRefreshEmails: refreshEmails,
           onFullSync: handleFullSync,
           isSyncing: isSyncing,
+      isRefreshing: refreshingAccount === selectedAccount,
           expandedSenderForAccount: expandedSenders[selectedAccount] || null,
           onToggleExpansion: toggleSenderExpansion,
           onStatusChange: (senderEmail: string, status: string) => handleSenderStatusChange(senderEmail, status as SenderStatus),
@@ -791,6 +897,8 @@ export default function App() {
           pendingDeleteUid: pendingDeleteUid
         }) : currentView === 'automation' && selectedAccount ? createElement(AutomationView, {
           key: 'automation-view',
+          account: selectedAccountEntity,
+          email: selectedAccount,
           periodicMinutes: periodicMinutes,
           onPeriodicMinutesChange: handlePeriodicMinutesChange,
           onSavePeriodicSync: handleSavePeriodicSync,
@@ -800,8 +908,33 @@ export default function App() {
           onApplyBlockFilter: handleApplyBlockFilter,
           isApplyingBlockFilter: isApplyingBlockFilter,
           syncReport: syncReport,
+          syncProgress: syncProgress,
           onFullSync: handleFullSync,
-          isSyncing: isSyncing
+          isSyncing: isSyncing,
+          isRefreshing: refreshingAccount === selectedAccount,
+          emailsCount: currentEmails.length,
+          totalKnownMessages: totalCachedCount
+        }) : currentView === 'accounts' ? createElement(AccountsView, {
+          key: 'accounts-view',
+          accounts: accounts,
+          savedAccounts: savedAccounts,
+          runtimeByEmail,
+          selectedAccount: selectedAccount,
+          activeAccount: selectedAccountEntity,
+          statusPills: selectedAccountStatusPills,
+          syncReport: syncReport,
+          syncProgress: syncProgress,
+          isSyncing: isSyncing,
+          isRefreshing: refreshingAccount === selectedAccount,
+          emailsCount: currentEmails.length,
+          totalKnownMessages: totalCachedCount,
+          onAddAccount: handleOpenConnectionWizard,
+          onSelectAccount: (email: string) => {
+            handleAccountSelect(email);
+          },
+          onConnectSaved: handleConnectSavedAccount,
+          onRemoveAccount: handleRemoveAccount,
+          connectingSavedEmail: connectingSavedEmail
         }) : currentView === 'settings' ? createElement(SettingsView, { key: 'settings-view' }) : currentView === 'sync' && selectedAccount ? createElement('div', {
           key: 'sync-view',
           style: { padding: '24px' }
@@ -827,40 +960,28 @@ export default function App() {
         }, [
           createElement('h2', { key: 'welcome-title', style: { marginBottom: '16px' } }, 'Welcome to Personal Mail Client'),
           createElement('p', { key: 'welcome-desc', style: { marginBottom: '32px', color: '#6b7280' } }, 'Connect an email account to get started with professional email management.'),
-          createElement(ButtonComponent, {
-            key: 'connect-button',
-            cssClass: 'primary large',
-            content: '+ Connect Account',
-            onClick: handleOpenConnectionWizard
-          })
+          createElement('div', {
+            key: 'welcome-actions',
+            style: {
+              display: 'flex',
+              gap: '12px'
+            }
+          }, [
+            createElement(ButtonComponent, {
+              key: 'connect-button',
+              cssClass: 'primary large',
+              content: '+ Connect Account',
+              onClick: handleOpenConnectionWizard
+            }),
+            createElement(ButtonComponent, {
+              key: 'saved-accounts-button',
+              cssClass: 'e-outline large',
+              content: 'Saved Accounts',
+              onClick: handleOpenSavedAccountsDialog
+            })
+          ])
         ])
       ])
-    ]),
-
-    // Info Snackbar
-    info && createElement('div', {
-      key: 'info-snackbar',
-      style: {
-        position: 'fixed',
-        top: '24px',
-        left: '50%',
-        transform: 'translateX(-50%)',
-        backgroundColor: '#3b82f6',
-        color: '#ffffff',
-        padding: '12px 24px',
-        borderRadius: '6px',
-        zIndex: 1300,
-        display: 'flex',
-        alignItems: 'center'
-      }
-    }, [
-      createElement('span', { key: 'info-icon', style: { marginRight: '8px' } }, 'ℹ️'),
-      info,
-      createElement('button', {
-        key: 'close-info',
-        style: { marginLeft: '16px', background: 'none', border: 'none', color: '#ffffff', cursor: 'pointer' },
-        onClick: handleInfoClose
-      }, '×')
     ]),
 
     // Floating Action Button
@@ -876,33 +997,20 @@ export default function App() {
       key: 'connection-wizard',
       open: connectionWizardOpen,
       onClose: handleCloseConnectionWizard,
-      onConnect: async (formData) => {
-        setError(null);
-        setInfo(null);
-        setIsSubmitting(true);
-        try {
-          const payload = await invoke<ConnectAccountResponse>("connect_account", {
-            provider: formData.provider,
-            email: formData.email,
-            password: formData.password,
-            customHost: formData.customHost || undefined,
-            customPort: formData.customPort ? formData.customPort : undefined
-          });
-          await applyConnectResponse(payload);
-          await loadSavedAccounts();
-          setInfo(`Connected to ${providerLabels[payload.account.provider]} as ${payload.account.email}`);
-        } catch (err) {
-          console.error(err);
-          setError(err instanceof Error ? err.message : String(err));
-        } finally {
-          setIsSubmitting(false);
-        }
-      },
-      onConnectSaved: connectSavedAccount,
+      onConnected: handleAccountConnected
+    }),
+
+    // Saved Accounts Dialog
+    createElement(SavedAccountsDialog, {
+      key: 'saved-accounts-dialog',
+      open: savedAccountsDialogOpen,
+      onClose: handleCloseSavedAccountsDialog,
       savedAccounts: savedAccounts,
-      isSubmitting: isSubmitting,
-      prefillingSavedEmail: null,
-      connectingSavedEmail: connectingSavedEmail
-    })
+  onConnectSaved: handleConnectSavedAccount,
+      connectingSavedEmail: connectingSavedEmail,
+      onOpenConnectionWizard: handleOpenConnectionWizard
+    }),
+
+    createElement(NotificationsHost, { key: 'notifications-host' })
   ]);
 }

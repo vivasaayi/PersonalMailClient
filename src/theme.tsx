@@ -1,9 +1,5 @@
 import React from 'react';
-import { registerLicense } from '@syncfusion/ej2-base';
 import { setCulture, setCurrencyCode } from '@syncfusion/ej2-base';
-
-// Register SyncFusion license (replace with your actual license key)
-registerLicense('Your SyncFusion License Key Here');
 
 // Set culture and locale
 setCulture('en-US');

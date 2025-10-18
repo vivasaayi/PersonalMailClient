@@ -50,6 +50,10 @@ pub async fn fetch_recent(
     imap::fetch_recent(credentials, limit).await
 }
 
+pub async fn verify_credentials(credentials: &Credentials) -> Result<(), ProviderError> {
+    imap::verify_credentials(credentials).await
+}
+
 #[derive(Debug, Clone)]
 pub struct MessageEnvelope {
     pub summary: EmailSummary,
@@ -71,7 +75,13 @@ pub async fn fetch_all(
     credentials: &Credentials,
     since_uid: Option<u32>,
     chunk_size: usize,
-) -> Result<(UnboundedReceiver<BatchResult>, JoinHandle<Result<(), ProviderError>>), ProviderError> {
+) -> Result<
+    (
+        UnboundedReceiver<BatchResult>,
+        JoinHandle<Result<(), ProviderError>>,
+    ),
+    ProviderError,
+> {
     imap::fetch_all(credentials, since_uid, chunk_size).await
 }
 
@@ -98,6 +108,8 @@ mod tests {
             Provider::Gmail,
             "user@example.com".to_string(),
             "secret".to_string(),
+            None,
+            None,
         );
         let result = fetch_recent(&credentials, 0).await;
         assert!(matches!(result, Err(ProviderError::Other(_))));
