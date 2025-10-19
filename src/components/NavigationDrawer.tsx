@@ -36,9 +36,15 @@ export default function NavigationDrawer({
 }: NavigationDrawerProps) {
   const menuItems = [
     {
-      id: 'mailbox',
-      label: 'Mailbox',
-      icon: '📬',
+      id: 'webmail',
+      label: 'Webmail',
+      icon: '📧',
+      disabled: !selectedAccount,
+    },
+    {
+      id: 'pivot',
+      label: 'Pivot View',
+      icon: '�',
       disabled: !selectedAccount,
     },
     {

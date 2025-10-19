@@ -537,6 +537,27 @@ select {
   flex-wrap: wrap;
 }
 
+/* View header styles */
+.mailbox-view-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mailbox-view-title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: rgba(226, 232, 240, 0.95);
+}
+
+.mailbox-view-description {
+  margin: 0;
+  font-size: 0.82rem;
+  color: rgba(226, 232, 240, 0.75);
+}
+
+/* Legacy toggle styles - kept for backward compatibility */
 .mailbox-view-toggle {
   display: flex;
   gap: 10px;

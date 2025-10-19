@@ -3,7 +3,7 @@ import type { Account } from "../types";
 
 export function useUIState(accounts: Account[]) {
   const [drawerOpen, setDrawerOpen] = useState(true);
-  const [currentView, setCurrentView] = useState<string>("mailbox");
+  const [currentView, setCurrentView] = useState<string>("webmail");
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null);
   const [connectionWizardOpen, setConnectionWizardOpen] = useState(false);
   const [savedAccountsDialogOpen, setSavedAccountsDialogOpen] = useState(false);
@@ -12,7 +12,7 @@ export function useUIState(accounts: Account[]) {
   useEffect(() => {
     if (
       accounts.length === 0 &&
-      ["mailbox", "automation", "sync", "blocked"].includes(currentView)
+      ["webmail", "pivot", "automation", "sync", "blocked"].includes(currentView)
     ) {
       setCurrentView("accounts");
     }
@@ -25,7 +25,7 @@ export function useUIState(accounts: Account[]) {
   const handleAccountSelect = useCallback((email: string | null) => {
     setSelectedAccount(email);
     if (email) {
-      setCurrentView("mailbox");
+      setCurrentView("webmail");
     }
   }, []);
 

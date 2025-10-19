@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { ButtonComponent } from "@syncfusion/ej2-react-buttons";
 import type { Account, EmailSummary, SenderGroup, SyncProgress, SyncReport } from "../types";
 import EmailList, { type EmailInsightRecord } from "./EmailList";
@@ -8,23 +8,21 @@ import { AccountStatusBanner } from "./AccountStatusBanner";
 import { SyncSummary } from "./SyncSummary";
 import { buildSyncStatusPills } from "../utils/mailboxStatus";
 
-type TabKey = "webmail" | "pivot";
+type ViewType = "webmail" | "pivot";
 
-const tabs: { key: TabKey; label: string; description: string }[] = [
-  {
-    key: "webmail",
-    label: "Webmail",
+const viewMeta: Record<ViewType, { title: string; description: string }> = {
+  webmail: {
+    title: "Webmail",
     description: "Day-to-day email reading and management"
   },
-  {
-    key: "pivot",
-    label: "Pivot",
+  pivot: {
+    title: "Pivot View",
     description: "Sender analysis and bulk classification"
   }
-];
-
+};
 
 interface MailboxProps {
+  viewType: ViewType;
   selectedAccount: string;
   accounts: Account[];
   emails: EmailSummary[];
@@ -45,6 +43,7 @@ interface MailboxProps {
 }
 
 export default function Mailbox({
+  viewType,
   selectedAccount,
   accounts,
   emails,
@@ -63,7 +62,6 @@ export default function Mailbox({
   onDeleteMessage,
   pendingDeleteUid
 }: MailboxProps) {
-  const [activeTab, setActiveTab] = useState<TabKey>("webmail");
 
   const messageInsights = useMemo<Record<string, EmailInsightRecord>>(() => {
     const map: Record<string, EmailInsightRecord> = {};
@@ -80,7 +78,7 @@ export default function Mailbox({
   }, [senderGroups]);
 
   const account = accounts.find((acct) => acct.email === selectedAccount);
-  const activeTabMeta = tabs.find((tab) => tab.key === activeTab) ?? tabs[0];
+  const currentViewMeta = viewMeta[viewType];
   const totalKnownMessages = Math.max(totalCachedCount, emails.length);
 
   const statusPills = buildSyncStatusPills({
@@ -126,22 +124,10 @@ export default function Mailbox({
       />
 
       <section className="mailbox-controls">
-        <div className="mailbox-view-toggle">
-          {tabs.map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              className={`mailbox-view-toggle__button${activeTab === tab.key ? " active" : ""}`}
-              onClick={() => setActiveTab(tab.key)}
-            >
-              <span className="mailbox-view-toggle__icon">
-                {tab.key === "webmail" ? "📧" : "�"}
-              </span>
-              <span>{tab.label}</span>
-            </button>
-          ))}
+        <div className="mailbox-view-header">
+          <h2 className="mailbox-view-title">{currentViewMeta.title}</h2>
+          <p className="mailbox-view-description">{currentViewMeta.description}</p>
         </div>
-        <p className="mailbox-controls__description">{activeTabMeta.description}</p>
       </section>
 
       <SyncSummary
@@ -153,7 +139,7 @@ export default function Mailbox({
       />
 
       <main className="mailbox-body">
-        {activeTab === "webmail" ? (
+        {viewType === "webmail" ? (
           <WebMailView emails={emails} messageInsights={messageInsights} />
         ) : (
           <SenderGrid

@@ -109,9 +109,10 @@ export default function App() {
 }
 function renderViewContent(appState, periodicMinutes) {
     const { currentView, selectedAccount } = appState;
-    if (currentView === "mailbox" && selectedAccount) {
+    if ((currentView === "webmail" || currentView === "pivot") && selectedAccount) {
         return createElement(Mailbox, {
-            key: "mailbox-view",
+            key: `${currentView}-view`,
+            viewType: currentView,
             selectedAccount: selectedAccount,
             accounts: appState.accounts,
             emails: appState.currentEmails,
