@@ -314,7 +314,7 @@ export default function SenderGrid({
 
   useEffect(() => {
     applyGrouping(groupOption);
-  }, [applyGrouping, groupOption, gridData]);
+  }, [applyGrouping, groupOption]);
 
   const handleGroupingChange = useCallback((next: GroupOption) => {
     setGroupOption(next);

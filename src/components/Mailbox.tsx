@@ -3,22 +3,23 @@ import { ButtonComponent } from "@syncfusion/ej2-react-buttons";
 import type { Account, EmailSummary, SenderGroup, SyncProgress, SyncReport } from "../types";
 import EmailList, { type EmailInsightRecord } from "./EmailList";
 import SenderGrid from "./SenderGrid";
+import { WebMailView } from "./WebMailView";
 import { AccountStatusBanner } from "./AccountStatusBanner";
 import { SyncSummary } from "./SyncSummary";
 import { buildSyncStatusPills } from "../utils/mailboxStatus";
 
-type TabKey = "recent" | "senders";
+type TabKey = "webmail" | "pivot";
 
 const tabs: { key: TabKey; label: string; description: string }[] = [
   {
-    key: "recent",
-    label: "Recent",
-    description: "Latest messages fetched from the server"
+    key: "webmail",
+    label: "Webmail",
+    description: "Day-to-day email reading and management"
   },
   {
-    key: "senders",
-    label: "Senders",
-    description: "Grouped conversations with status controls"
+    key: "pivot",
+    label: "Pivot",
+    description: "Sender analysis and bulk classification"
   }
 ];
 
@@ -62,7 +63,7 @@ export default function Mailbox({
   onDeleteMessage,
   pendingDeleteUid
 }: MailboxProps) {
-  const [activeTab, setActiveTab] = useState<TabKey>("senders");
+  const [activeTab, setActiveTab] = useState<TabKey>("webmail");
 
   const messageInsights = useMemo<Record<string, EmailInsightRecord>>(() => {
     const map: Record<string, EmailInsightRecord> = {};
@@ -134,7 +135,7 @@ export default function Mailbox({
               onClick={() => setActiveTab(tab.key)}
             >
               <span className="mailbox-view-toggle__icon">
-                {tab.key === "recent" ? "📧" : "👥"}
+                {tab.key === "webmail" ? "📧" : "�"}
               </span>
               <span>{tab.label}</span>
             </button>
@@ -152,8 +153,8 @@ export default function Mailbox({
       />
 
       <main className="mailbox-body">
-        {activeTab === "recent" ? (
-          <EmailList emails={emails} messageInsights={messageInsights} />
+        {activeTab === "webmail" ? (
+          <WebMailView emails={emails} messageInsights={messageInsights} />
         ) : (
           <SenderGrid
             senderGroups={senderGroups}

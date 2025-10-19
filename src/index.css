@@ -1520,3 +1520,60 @@ select {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* Webmail View Styles */
+.webmail-container {
+  background-color: #ffffff;
+}
+
+.webmail-list-pane {
+  background-color: #f9fafb;
+}
+
+.webmail-list-item {
+  transition: background-color 0.15s ease;
+}
+
+.webmail-list-item:hover {
+  background-color: #f3f4f6 !important;
+}
+
+.webmail-list-item.selected {
+  background-color: #eff6ff !important;
+  border-left: 3px solid #3b82f6;
+}
+
+.webmail-listview .e-list-item {
+  padding: 0 !important;
+  border: none !important;
+}
+
+.webmail-detail-pane {
+  background-color: #ffffff;
+}
+
+.webmail-detail-pane button {
+  transition: all 0.2s ease;
+}
+
+.webmail-detail-pane button:hover {
+  background-color: #f3f4f6;
+  border-color: #9ca3af;
+}
+
+.webmail-group-header {
+  background-color: #f3f4f6;
+  transition: background-color 0.15s ease;
+}
+
+.webmail-group-header:hover {
+  background-color: #e5e7eb;
+}
+
+.webmail-grouped-item {
+  border-left: 2px solid #e5e7eb;
+}
+
+.webmail-grouped-item:hover {
+  border-left-color: #3b82f6;
+}

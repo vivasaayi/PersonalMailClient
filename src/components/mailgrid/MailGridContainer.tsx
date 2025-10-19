@@ -42,7 +42,7 @@ export function MailGridContainer({
           {toolbarTemplate && <ItemDirective align="Right" template={toolbarTemplate} />}
         </ItemsDirective>
       </ToolbarComponent>
-      <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>{children}</div>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>{children}</div>
     </div>
   );
 }

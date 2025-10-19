@@ -57,7 +57,7 @@ export function SyncSummary({ emailsCount, totalKnownMessages, syncReport, syncP
 
   return (
     <section className="mailbox-summary">
-      <div className="mailbox-summary__item">
+      <div style={{ backgroundColor: "red" }} className="mailbox-summary__item">
         <span className="mailbox-summary__label">Cached view</span>
         <span className="mailbox-summary__value">{emailsCount.toLocaleString()}</span>
         <span className="mailbox-summary__meta">{cachedMeta}</span>

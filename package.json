@@ -23,6 +23,7 @@
     "@syncfusion/ej2-react-notifications": "^31.2.2",
     "@syncfusion/ej2-react-popups": "^31.2.2",
     "@syncfusion/ej2-react-progressbar": "^31.2.2",
+    "@syncfusion/ej2-react-splitbuttons": "^31.2.2",
     "@tauri-apps/api": "^1.5.3",
     "clsx": "^2.1.1",
     "dayjs": "^1.11.11",
