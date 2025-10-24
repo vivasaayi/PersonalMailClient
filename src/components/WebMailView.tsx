@@ -10,6 +10,7 @@ import { DropDownButtonComponent } from "@syncfusion/ej2-react-splitbuttons";
 import dayjs from "dayjs";
 import type { EmailSummary } from "../types";
 import type { EmailInsightRecord } from "./EmailList";
+import { EmailActionDropdown } from "./EmailActionDropdown";
 
 interface WebMailViewProps {
   emails: EmailSummary[];
@@ -169,81 +170,95 @@ export function WebMailView({ emails, messageInsights }: WebMailViewProps) {
         }}
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: "4px" }}>
-          <div
-            style={{
-              fontSize: "14px",
-              fontWeight: 600,
-              color: "#111827",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              flex: 1,
-              marginRight: "12px"
-            }}
-          >
-            {email.sender.display_name || email.sender.email}
-          </div>
-          <div
-            style={{
-              fontSize: "12px",
-              color: "#6b7280",
-              flexShrink: 0
-            }}
-          >
-            {formatDate(email.date)}
-          </div>
-        </div>
-        <div
-          style={{
-            fontSize: "13px",
-            fontWeight: 500,
-            color: "#374151",
-            marginBottom: "4px",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap"
-          }}
-        >
-          {email.subject || "(No subject)"}
-        </div>
-        <div
-          style={{
-            fontSize: "12px",
-            color: "#6b7280",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap"
-          }}
-        >
-          {insight?.message.analysis_summary || ""}
-        </div>
-        {insight?.message.analysis_sentiment && (
-          <div style={{ marginTop: "6px" }}>
-            <span
+          <div onClick={() => setSelectedEmail(email)} style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: "4px" }}>
+              <div
+                style={{
+                  fontSize: "14px",
+                  fontWeight: 600,
+                  color: "#111827",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  flex: 1,
+                  marginRight: "12px"
+                }}
+              >
+                {email.sender.display_name || email.sender.email}
+              </div>
+              <div
+                style={{
+                  fontSize: "12px",
+                  color: "#6b7280",
+                  flexShrink: 0,
+                  marginRight: "8px"
+                }}
+              >
+                {formatDate(email.date)}
+              </div>
+            </div>
+            <div
               style={{
-                display: "inline-block",
-                padding: "2px 8px",
-                borderRadius: "4px",
-                fontSize: "11px",
+                fontSize: "13px",
                 fontWeight: 500,
-                backgroundColor:
-                  insight.message.analysis_sentiment === "positive"
-                    ? "#dcfce7"
-                    : insight.message.analysis_sentiment === "negative"
-                    ? "#fee2e2"
-                    : "#f3f4f6",
-                color:
-                  insight.message.analysis_sentiment === "positive"
-                    ? "#16a34a"
-                    : insight.message.analysis_sentiment === "negative"
-                    ? "#dc2626"
-                    : "#6b7280"
+                color: "#374151",
+                marginBottom: "4px",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap"
               }}
             >
-              {insight.message.analysis_sentiment}
-            </span>
+              {email.subject || "(No subject)"}
+            </div>
+            <div
+              style={{
+                fontSize: "12px",
+                color: "#6b7280",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap"
+              }}
+            >
+              {insight?.message.analysis_summary || ""}
+            </div>
+            {insight?.message.analysis_sentiment && (
+              <div style={{ marginTop: "6px" }}>
+                <span
+                  style={{
+                    display: "inline-block",
+                    padding: "2px 8px",
+                    borderRadius: "4px",
+                    fontSize: "11px",
+                    fontWeight: 500,
+                    backgroundColor:
+                      insight.message.analysis_sentiment === "positive"
+                        ? "#dcfce7"
+                        : insight.message.analysis_sentiment === "negative"
+                        ? "#fee2e2"
+                        : "#f3f4f6",
+                    color:
+                      insight.message.analysis_sentiment === "positive"
+                        ? "#16a34a"
+                        : insight.message.analysis_sentiment === "negative"
+                        ? "#dc2626"
+                        : "#6b7280"
+                  }}
+                >
+                  {insight.message.analysis_sentiment}
+                </span>
+              </div>
+            )}
           </div>
-        )}
+          <div onClick={(e) => e.stopPropagation()} style={{ flexShrink: 0, marginLeft: "8px" }}>
+            <EmailActionDropdown
+              email={email.sender.email}
+              currentStatus={insight?.message?.status || 'neutral'}
+              size="small"
+              showLabel={false}
+              showIcon={true}
+            />
+          </div>
+        </div>
       </div>
     );
   }, [selectedEmail, messageInsights]);
@@ -281,12 +296,10 @@ export function WebMailView({ emails, messageInsights }: WebMailViewProps) {
             <div key={group.key}>
               {/* Group Header */}
               <div
-                onClick={() => toggleGroup(group.key)}
                 style={{
                   padding: "12px 16px",
                   backgroundColor: "#f3f4f6",
                   borderBottom: "1px solid #e5e7eb",
-                  cursor: "pointer",
                   display: "flex",
                   justifyContent: "space-between",
                   alignItems: "center",
@@ -295,21 +308,41 @@ export function WebMailView({ emails, messageInsights }: WebMailViewProps) {
                   color: "#374151"
                 }}
               >
-                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                  <span style={{ fontSize: "12px" }}>{isExpanded ? "▼" : "▶"}</span>
-                  <span>{group.label}</span>
-                </div>
-                <span
-                  style={{
-                    fontSize: "12px",
-                    padding: "2px 8px",
-                    backgroundColor: "#e5e7eb",
-                    borderRadius: "12px",
-                    color: "#6b7280"
+                <div 
+                  onClick={() => toggleGroup(group.key)}
+                  style={{ 
+                    display: "flex", 
+                    alignItems: "center", 
+                    gap: "8px",
+                    cursor: "pointer",
+                    flex: 1
                   }}
                 >
-                  {group.count}
-                </span>
+                  <span style={{ fontSize: "12px" }}>{isExpanded ? "▼" : "▶"}</span>
+                  <span>{group.label}</span>
+                  <span
+                    style={{
+                      fontSize: "12px",
+                      padding: "2px 8px",
+                      backgroundColor: "#e5e7eb",
+                      borderRadius: "12px",
+                      color: "#6b7280"
+                    }}
+                  >
+                    {group.count}
+                  </span>
+                </div>
+                {(groupMode === "sender-name" || groupMode === "sender-email") && group.emails.length > 0 && (
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <EmailActionDropdown
+                      email={group.emails[0].sender.email}
+                      currentStatus={messageInsights[group.emails[0].uid]?.message?.status || 'neutral'}
+                      size="small"
+                      showLabel={false}
+                      showIcon={true}
+                    />
+                  </div>
+                )}
               </div>
               
               {/* Group Emails */}
@@ -333,78 +366,92 @@ export function WebMailView({ emails, messageInsights }: WebMailViewProps) {
                   <div
                     key={email.uid}
                     className={`webmail-list-item${isSelected ? " selected" : ""}`}
-                    onClick={() => setSelectedEmail(email)}
                     style={{
                       padding: "12px 16px 12px 40px",
                       borderBottom: "1px solid #e5e7eb",
                       cursor: "pointer",
                       backgroundColor: itemBgColor,
-                      transition: "background-color 0.15s"
+                      transition: "background-color 0.15s",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "start"
                     }}
                   >
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: "4px" }}>
-                      <div
-                        style={{
-                          fontSize: "13px",
-                          fontWeight: 500,
-                          color: "#374151",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                          flex: 1,
-                          marginRight: "12px"
-                        }}
-                      >
-                        {email.subject || "(No subject)"}
+                    <div onClick={() => setSelectedEmail(email)} style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: "4px" }}>
+                        <div
+                          style={{
+                            fontSize: "13px",
+                            fontWeight: 500,
+                            color: "#374151",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                            flex: 1,
+                            marginRight: "12px"
+                          }}
+                        >
+                          {email.subject || "(No subject)"}
+                        </div>
+                        <div
+                          style={{
+                            fontSize: "12px",
+                            color: "#6b7280",
+                            flexShrink: 0,
+                            marginRight: "8px"
+                          }}
+                        >
+                          {formatDate(email.date)}
+                        </div>
                       </div>
                       <div
                         style={{
                           fontSize: "12px",
                           color: "#6b7280",
-                          flexShrink: 0
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap"
                         }}
                       >
-                        {formatDate(email.date)}
+                        {insight?.message.analysis_summary || ""}
                       </div>
+                      {insight?.message.analysis_sentiment && (
+                        <div style={{ marginTop: "6px" }}>
+                          <span
+                            style={{
+                              display: "inline-block",
+                              padding: "2px 8px",
+                              borderRadius: "4px",
+                              fontSize: "11px",
+                              fontWeight: 500,
+                              backgroundColor:
+                                insight.message.analysis_sentiment === "positive"
+                                  ? "#dcfce7"
+                                  : insight.message.analysis_sentiment === "negative"
+                                  ? "#fee2e2"
+                                  : "#f3f4f6",
+                              color:
+                                insight.message.analysis_sentiment === "positive"
+                                  ? "#16a34a"
+                                  : insight.message.analysis_sentiment === "negative"
+                                  ? "#dc2626"
+                                  : "#6b7280"
+                            }}
+                          >
+                            {insight.message.analysis_sentiment}
+                          </span>
+                        </div>
+                      )}
                     </div>
-                    <div
-                      style={{
-                        fontSize: "12px",
-                        color: "#6b7280",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap"
-                      }}
-                    >
-                      {insight?.message.analysis_summary || ""}
+                    <div onClick={(e) => e.stopPropagation()} style={{ flexShrink: 0, marginLeft: "8px" }}>
+                      <EmailActionDropdown
+                        email={email.sender.email}
+                        currentStatus={insight?.message?.status || 'neutral'}
+                        size="small"
+                        showLabel={false}
+                        showIcon={true}
+                      />
                     </div>
-                    {insight?.message.analysis_sentiment && (
-                      <div style={{ marginTop: "6px" }}>
-                        <span
-                          style={{
-                            display: "inline-block",
-                            padding: "2px 8px",
-                            borderRadius: "4px",
-                            fontSize: "11px",
-                            fontWeight: 500,
-                            backgroundColor:
-                              insight.message.analysis_sentiment === "positive"
-                                ? "#dcfce7"
-                                : insight.message.analysis_sentiment === "negative"
-                                ? "#fee2e2"
-                                : "#f3f4f6",
-                            color:
-                              insight.message.analysis_sentiment === "positive"
-                                ? "#16a34a"
-                                : insight.message.analysis_sentiment === "negative"
-                                ? "#dc2626"
-                                : "#6b7280"
-                          }}
-                        >
-                          {insight.message.analysis_sentiment}
-                        </span>
-                      </div>
-                    )}
                   </div>
                 );
               })}
@@ -457,7 +504,7 @@ export function WebMailView({ emails, messageInsights }: WebMailViewProps) {
                 { text: "By Sender Email", id: "sender-email" },
                 { text: "By Day", id: "by-day" }
               ]}
-              cssClass={groupMode !== "none" ? "e-small e-primary" : "e-small e-outline"}
+              cssClass={`webmail-group-dropdown ${groupMode !== "none" ? "e-small e-primary" : "e-small e-outline"}`}
               content="Group By"
               select={(args: any) => {
                 setGroupMode(args.item.id as GroupMode);
@@ -556,6 +603,13 @@ export function WebMailView({ emails, messageInsights }: WebMailViewProps) {
                   {selectedEmail.sender.email}
                 </div>
               </div>
+              <EmailActionDropdown
+                email={selectedEmail.sender.email}
+                currentStatus={messageInsights[selectedEmail.uid]?.message?.status || 'neutral'}
+                size="normal"
+                showLabel={true}
+                showIcon={true}
+              />
               <div style={{ fontSize: "12px", color: "#6b7280" }}>
                 {dayjs(selectedEmail.date).format("MMM D, YYYY h:mm A")}
               </div>

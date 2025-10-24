@@ -22,6 +22,7 @@ import dayjs from "dayjs";
 import type { SenderGroup, SenderStatus } from "../types";
 import { MailGridContainer } from "./mailgrid/MailGridContainer";
 import { GroupingToggle, type GroupOption } from "./mailgrid/GroupingToggle";
+import { EmailActionDropdown } from "./EmailActionDropdown";
 
 interface SenderGridProps {
   senderGroups: SenderGroup[];
@@ -156,22 +157,20 @@ export default function SenderGrid({
 
   const statusTemplate = useCallback(
     (props: GridSenderGroup) => {
-      const statuses: SenderStatus[] = ["allowed", "neutral", "blocked"];
-      const isUpdating = statusUpdating === props.sender_email;
-
-      return createElement('div', { style: { display: 'flex', gap: '4px', justifyContent: 'center' } },
-        statuses.map((status) =>
-          createElement(ButtonComponent, {
-            key: status,
-            cssClass: `status-button ${props.status === status ? 'active' : ''}`,
-            content: statusLabel(status),
-            disabled: isUpdating || props.status === status,
-            onClick: () => onStatusChange(props.sender_email, status)
-          })
-        )
+      return createElement('div', { style: { display: 'flex', justifyContent: 'center' } },
+        createElement(EmailActionDropdown, {
+          email: props.sender_email,
+          currentStatus: props.status,
+          size: 'small',
+          showLabel: true,
+          showIcon: true,
+          onActionComplete: () => {
+            // Status change will trigger a re-render via parent state update
+          }
+        })
       );
     },
-    [onStatusChange, statusUpdating],
+    [],
   );
 
   const detailTemplate = useCallback(

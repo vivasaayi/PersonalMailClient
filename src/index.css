@@ -1598,3 +1598,99 @@ select {
 .webmail-grouped-item:hover {
   border-left-color: #3b82f6;
 }
+
+/* Dropdown menu styling for Group By button */
+.e-dropdown-popup,
+.webmail-group-dropdown-popup {
+  background-color: #ffffff !important;
+  border: 1px solid #d1d5db !important;
+  border-radius: 8px !important;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05) !important;
+  padding: 4px !important;
+  min-width: 180px !important;
+  z-index: 1000 !important;
+}
+
+.e-dropdown-popup ul,
+.webmail-group-dropdown-popup ul {
+  padding: 0 !important;
+  margin: 0 !important;
+  background: transparent !important;
+}
+
+.e-dropdown-popup ul li,
+.webmail-group-dropdown-popup ul li {
+  padding: 10px 16px !important;
+  border-radius: 6px !important;
+  margin: 2px 4px !important;
+  font-size: 14px !important;
+  color: #374151 !important;
+  background-color: #ffffff !important;
+  transition: all 0.15s ease !important;
+  cursor: pointer !important;
+  list-style: none !important;
+  border: none !important;
+}
+
+.e-dropdown-popup ul li:hover,
+.webmail-group-dropdown-popup ul li:hover {
+  background-color: #f3f4f6 !important;
+  color: #111827 !important;
+}
+
+.e-dropdown-popup ul li.e-focused,
+.e-dropdown-popup ul li.e-active,
+.webmail-group-dropdown-popup ul li.e-focused,
+.webmail-group-dropdown-popup ul li.e-active {
+  background-color: #eff6ff !important;
+  color: #1e40af !important;
+}
+
+/* Remove any background colors on dropdown items */
+.e-dropdown-popup ul li span,
+.webmail-group-dropdown-popup ul li span {
+  background: transparent !important;
+  color: inherit !important;
+}
+
+/* Override Syncfusion default dropdown item styling */
+.e-dropdown-btn .e-caret {
+  font-size: 10px !important;
+}
+
+/* Email Action Dropdown Styling */
+.email-action-dropdown.e-success {
+  background-color: #10b981 !important;
+  border-color: #10b981 !important;
+  color: white !important;
+}
+
+.email-action-dropdown.e-success:hover {
+  background-color: #059669 !important;
+}
+
+.email-action-dropdown.e-danger {
+  background-color: #ef4444 !important;
+  border-color: #ef4444 !important;
+  color: white !important;
+}
+
+.email-action-dropdown.e-danger:hover {
+  background-color: #dc2626 !important;
+}
+
+.email-action-dropdown.e-outline {
+  background-color: transparent !important;
+  border-color: #d1d5db !important;
+  color: #6b7280 !important;
+}
+
+.email-action-dropdown.e-outline:hover {
+  background-color: #f3f4f6 !important;
+  border-color: #9ca3af !important;
+}
+
+.email-action-dropdown.e-small {
+  padding: 4px 8px !important;
+  font-size: 12px !important;
+}

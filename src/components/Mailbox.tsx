@@ -5,7 +5,6 @@ import EmailList, { type EmailInsightRecord } from "./EmailList";
 import SenderGrid from "./SenderGrid";
 import { WebMailView } from "./WebMailView";
 import { AccountStatusBanner } from "./AccountStatusBanner";
-import { SyncSummary } from "./SyncSummary";
 import { buildSyncStatusPills } from "../utils/mailboxStatus";
 
 type ViewType = "webmail" | "pivot";
@@ -121,21 +120,6 @@ export default function Mailbox({
         email={selectedAccount}
         statusPills={statusPills}
         actions={quickActions}
-      />
-
-      <section className="mailbox-controls">
-        <div className="mailbox-view-header">
-          <h2 className="mailbox-view-title">{currentViewMeta.title}</h2>
-          <p className="mailbox-view-description">{currentViewMeta.description}</p>
-        </div>
-      </section>
-
-      <SyncSummary
-        emailsCount={emails.length}
-        totalKnownMessages={totalKnownMessages}
-        syncReport={syncReport}
-        syncProgress={syncProgress}
-        isSyncing={isSyncing || isRefreshing}
       />
 
       <main className="mailbox-body">

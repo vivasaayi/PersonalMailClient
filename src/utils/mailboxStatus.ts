@@ -38,6 +38,24 @@ export function buildSyncStatusPills({
       text: progressPercent !== null ? `Syncing • ${progressPercent}%` : "Syncing…",
       tone: "active"
     });
+    
+    // Show batch progress during sync
+    if (syncProgress && syncProgress.total_batches > 0) {
+      pills.push({
+        key: "progress",
+        text: `Batch ${syncProgress.batch}/${syncProgress.total_batches}`,
+        tone: "warning"
+      });
+    }
+    
+    // Show total fetched during sync
+    if (syncProgress && syncProgress.fetched > 0) {
+      pills.push({
+        key: "fetched",
+        text: `${syncProgress.fetched.toLocaleString()} fetched`,
+        tone: "neutral"
+      });
+    }
   } else if (isRefreshing) {
     pills.push({
       key: "refresh",
@@ -52,14 +70,6 @@ export function buildSyncStatusPills({
     });
   } else {
     pills.push({ key: "idle", text: "Ready to sync", tone: "neutral" });
-  }
-
-  if (syncProgress && syncProgress.total_batches > 0) {
-    pills.push({
-      key: "progress",
-      text: `Batch ${syncProgress.batch}/${syncProgress.total_batches}`,
-      tone: "warning"
-    });
   }
 
   if (totalKnownMessages > 0) {
