@@ -8,13 +8,18 @@ import type { SelectEventArgs } from "@syncfusion/ej2-react-lists";
 import { ButtonComponent } from "@syncfusion/ej2-react-buttons";
 import { DropDownButtonComponent } from "@syncfusion/ej2-react-splitbuttons";
 import dayjs from "dayjs";
-import type { EmailSummary } from "../types";
+import type { EmailSummary, SenderStatus } from "../types";
 import type { EmailInsightRecord } from "./EmailList";
 import { EmailActionDropdown } from "./EmailActionDropdown";
 
 interface WebMailViewProps {
   emails: EmailSummary[];
   messageInsights: Record<string, EmailInsightRecord | undefined>;
+  onStatusChange: (senderEmail: string, status: SenderStatus) => Promise<void>;
+  statusUpdating: string | null;
+  hasMoreEmails: boolean;
+  onLoadMoreEmails?: () => Promise<void> | void;
+  isLoadingMoreEmails: boolean;
 }
 
 type GroupMode = "none" | "sender-name" | "sender-email" | "by-day";
@@ -42,11 +47,22 @@ const formatDate = (value?: string | null) => {
   }
 };
 
-export function WebMailView({ emails, messageInsights }: WebMailViewProps) {
+export function WebMailView({
+  emails,
+  messageInsights,
+  onStatusChange,
+  statusUpdating,
+  hasMoreEmails,
+  onLoadMoreEmails,
+  isLoadingMoreEmails
+}: WebMailViewProps) {
   const [selectedEmail, setSelectedEmail] = useState<EmailSummary | null>(null);
   const [groupMode, setGroupMode] = useState<GroupMode>("none");
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const prevGroupModeRef = useRef<GroupMode>("none");
+  const listViewRef = useRef<ListViewComponent | null>(null);
+  const loadMoreInFlight = useRef(false);
+  const groupedContainerRef = useRef<HTMLDivElement | null>(null);
 
   // Group emails by sender
   const groupedEmails = useMemo<GroupedEmails[]>(() => {
@@ -128,6 +144,88 @@ export function WebMailView({ emails, messageInsights }: WebMailViewProps) {
       }
     }
   }, [groupMode, groupedEmails]);
+
+  const requestMoreEmails = useCallback(() => {
+    if (!onLoadMoreEmails || loadMoreInFlight.current || isLoadingMoreEmails || !hasMoreEmails) {
+      return;
+    }
+
+    loadMoreInFlight.current = true;
+    Promise.resolve(onLoadMoreEmails()).finally(() => {
+      loadMoreInFlight.current = false;
+    });
+  }, [hasMoreEmails, isLoadingMoreEmails, onLoadMoreEmails]);
+
+  useEffect(() => {
+    if (groupMode !== "none") {
+      return;
+    }
+
+    const listElement = listViewRef.current?.element;
+    if (!listElement || !onLoadMoreEmails) {
+      return;
+    }
+
+    const handleScroll = () => {
+      const { scrollTop, scrollHeight, clientHeight } = listElement;
+      const distanceFromBottom = scrollHeight - (scrollTop + clientHeight);
+      if (distanceFromBottom < clientHeight * 1.5) {
+        requestMoreEmails();
+      }
+    };
+
+    listElement.addEventListener("scroll", handleScroll);
+
+    return () => {
+      listElement.removeEventListener("scroll", handleScroll);
+    };
+  }, [groupMode, onLoadMoreEmails, requestMoreEmails, emails.length]);
+
+  useEffect(() => {
+    if (groupMode !== "none") {
+      return;
+    }
+
+    const listElement = listViewRef.current?.element;
+    if (!listElement) {
+      return;
+    }
+
+    const viewportShorterThanContent = listElement.scrollHeight <= listElement.clientHeight * 1.1;
+    if (viewportShorterThanContent) {
+      requestMoreEmails();
+    }
+  }, [groupMode, requestMoreEmails, emails.length]);
+
+  useEffect(() => {
+    if (groupMode === "none") {
+      return;
+    }
+
+    const container = groupedContainerRef.current;
+    if (!container) {
+      return;
+    }
+
+    const handleScroll = () => {
+      const { scrollTop, scrollHeight, clientHeight } = container;
+      const distanceFromBottom = scrollHeight - (scrollTop + clientHeight);
+      if (distanceFromBottom < clientHeight * 1.5) {
+        requestMoreEmails();
+      }
+    };
+
+    container.addEventListener("scroll", handleScroll);
+
+    const viewportShorterThanContent = container.scrollHeight <= container.clientHeight * 1.1;
+    if (viewportShorterThanContent) {
+      requestMoreEmails();
+    }
+
+    return () => {
+      container.removeEventListener("scroll", handleScroll);
+    };
+  }, [groupMode, requestMoreEmails, groupedEmails.length]);
 
   const listData = useMemo(() => {
     return emails.map((email) => ({
@@ -256,12 +354,14 @@ export function WebMailView({ emails, messageInsights }: WebMailViewProps) {
               size="small"
               showLabel={false}
               showIcon={true}
+              isUpdating={statusUpdating === email.sender.email}
+              onStatusChange={(nextStatus) => onStatusChange(email.sender.email, nextStatus)}
             />
           </div>
         </div>
       </div>
     );
-  }, [selectedEmail, messageInsights]);
+  }, [messageInsights, onStatusChange, selectedEmail, statusUpdating]);
 
   if (emails.length === 0) {
     return (
@@ -289,7 +389,7 @@ export function WebMailView({ emails, messageInsights }: WebMailViewProps) {
 
   const renderGroupedView = () => {
     return (
-      <div style={{ flex: 1, overflow: "auto" }}>
+      <div ref={groupedContainerRef} style={{ flex: 1, overflow: "auto" }}>
         {groupedEmails.map((group) => {
           const isExpanded = expandedGroups.has(group.key);
           return (
@@ -340,6 +440,8 @@ export function WebMailView({ emails, messageInsights }: WebMailViewProps) {
                       size="small"
                       showLabel={false}
                       showIcon={true}
+                      isUpdating={statusUpdating === group.emails[0].sender.email}
+                      onStatusChange={(nextStatus) => onStatusChange(group.emails[0].sender.email, nextStatus)}
                     />
                   </div>
                 )}
@@ -450,6 +552,8 @@ export function WebMailView({ emails, messageInsights }: WebMailViewProps) {
                         size="small"
                         showLabel={false}
                         showIcon={true}
+                        isUpdating={statusUpdating === email.sender.email}
+                        onStatusChange={(nextStatus) => onStatusChange(email.sender.email, nextStatus)}
                       />
                     </div>
                   </div>
@@ -458,6 +562,12 @@ export function WebMailView({ emails, messageInsights }: WebMailViewProps) {
             </div>
           );
         })}
+        <div style={{ padding: "12px", textAlign: "center", color: "#6b7280" }}>
+          {isLoadingMoreEmails && <span>Loading more messages…</span>}
+          {!isLoadingMoreEmails && !hasMoreEmails && emails.length > 0 && (
+            <span>Showing all cached messages.</span>
+          )}
+        </div>
       </div>
     );
   };
@@ -518,6 +628,7 @@ export function WebMailView({ emails, messageInsights }: WebMailViewProps) {
         ) : (
           <div style={{ flex: 1, overflow: "auto" }}>
             <ListViewComponent
+              ref={listViewRef}
               dataSource={listData}
               template={listTemplate}
               select={handleEmailSelect}
@@ -526,6 +637,12 @@ export function WebMailView({ emails, messageInsights }: WebMailViewProps) {
             >
               <ListInject services={[Virtualization]} />
             </ListViewComponent>
+            <div style={{ padding: "12px", textAlign: "center", color: "#6b7280" }}>
+              {isLoadingMoreEmails && <span>Loading more messages…</span>}
+              {!isLoadingMoreEmails && !hasMoreEmails && emails.length > 0 && (
+                <span>Showing all cached messages.</span>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -609,6 +726,8 @@ export function WebMailView({ emails, messageInsights }: WebMailViewProps) {
                 size="normal"
                 showLabel={true}
                 showIcon={true}
+                isUpdating={statusUpdating === selectedEmail.sender.email}
+                onStatusChange={(nextStatus) => onStatusChange(selectedEmail.sender.email, nextStatus)}
               />
               <div style={{ fontSize: "12px", color: "#6b7280" }}>
                 {dayjs(selectedEmail.date).format("MMM D, YYYY h:mm A")}

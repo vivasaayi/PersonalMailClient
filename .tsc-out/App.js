@@ -9,6 +9,7 @@ import SettingsView from "./components/SettingsView";
 import AutomationView from "./components/AutomationView";
 import AccountsView from "./components/AccountsView";
 import NotificationsHost from "./components/NotificationsHost";
+import BlockedSendersView from "./components/BlockedSendersView";
 export default function App() {
     const appState = useAppState();
     const periodicMinutes = appState.selectedAccount
@@ -126,10 +127,13 @@ function renderViewContent(appState, periodicMinutes) {
             isRefreshing: appState.refreshingAccount === selectedAccount,
             expandedSenderForAccount: appState.expandedSenders[selectedAccount] || null,
             onToggleExpansion: appState.toggleSenderExpansion,
-            onStatusChange: (senderEmail, status) => appState.handleSenderStatusChange(senderEmail, status),
+            onStatusChange: appState.handleSenderStatusChange,
             statusUpdating: appState.statusUpdating,
             onDeleteMessage: appState.handleDeleteMessage,
-            pendingDeleteUid: appState.pendingDeleteUid
+            pendingDeleteUid: appState.pendingDeleteUid,
+            hasMoreEmails: appState.hasMoreEmails,
+            onLoadMoreEmails: appState.handleLoadMoreEmails,
+            isLoadingMoreEmails: appState.isLoadingMoreEmails
         });
     }
     if (currentView === "automation" && selectedAccount) {
@@ -191,13 +195,15 @@ function renderViewContent(appState, periodicMinutes) {
         ]);
     }
     if (currentView === "blocked" && selectedAccount) {
-        return createElement("div", {
+        return createElement(BlockedSendersView, {
             key: "blocked-view",
-            style: { padding: "24px" }
-        }, [
-            createElement("h2", { key: "blocked-title", style: { marginBottom: "16px" } }, `Blocked Senders for ${selectedAccount}`),
-            createElement("p", { key: "blocked-desc", style: { color: "#6b7280" } }, "Blocked senders management will be implemented here.")
-        ]);
+            senderGroups: appState.currentSenderGroups,
+            accountEmail: selectedAccount,
+            onStatusChange: appState.handleSenderStatusChange,
+            statusUpdating: appState.statusUpdating,
+            onRefresh: appState.handleRefreshEmails,
+            hasSenderData: appState.currentSenderGroups.length > 0
+        });
     }
     // Welcome view
     return createElement("div", {

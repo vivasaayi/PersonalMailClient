@@ -1,6 +1,13 @@
 import { useMemo } from "react";
 import { ButtonComponent } from "@syncfusion/ej2-react-buttons";
-import type { Account, EmailSummary, SenderGroup, SyncProgress, SyncReport } from "../types";
+import type {
+  Account,
+  EmailSummary,
+  SenderGroup,
+  SenderStatus,
+  SyncProgress,
+  SyncReport
+} from "../types";
 import EmailList, { type EmailInsightRecord } from "./EmailList";
 import SenderGrid from "./SenderGrid";
 import { WebMailView } from "./WebMailView";
@@ -35,10 +42,13 @@ interface MailboxProps {
   isRefreshing: boolean;
   expandedSenderForAccount: string | null;
   onToggleExpansion: (senderEmail: string) => void;
-  onStatusChange: (senderEmail: string, status: string) => Promise<void>;
+  onStatusChange: (senderEmail: string, status: SenderStatus) => Promise<void>;
   statusUpdating: string | null;
   onDeleteMessage: (senderEmail: string, uid: string) => Promise<void>;
   pendingDeleteUid: string | null;
+  hasMoreEmails: boolean;
+  onLoadMoreEmails: () => Promise<void> | void;
+  isLoadingMoreEmails: boolean;
 }
 
 export default function Mailbox({
@@ -59,7 +69,10 @@ export default function Mailbox({
   onStatusChange,
   statusUpdating,
   onDeleteMessage,
-  pendingDeleteUid
+  pendingDeleteUid,
+  hasMoreEmails,
+  onLoadMoreEmails,
+  isLoadingMoreEmails
 }: MailboxProps) {
 
   const messageInsights = useMemo<Record<string, EmailInsightRecord>>(() => {
@@ -124,7 +137,15 @@ export default function Mailbox({
 
       <main className="mailbox-body">
         {viewType === "webmail" ? (
-          <WebMailView emails={emails} messageInsights={messageInsights} />
+          <WebMailView
+            emails={emails}
+            messageInsights={messageInsights}
+            onStatusChange={onStatusChange}
+            statusUpdating={statusUpdating}
+            hasMoreEmails={hasMoreEmails}
+            onLoadMoreEmails={onLoadMoreEmails}
+            isLoadingMoreEmails={isLoadingMoreEmails}
+          />
         ) : (
           <SenderGrid
             senderGroups={senderGroups}

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/tauri";
 import type {
   Account,
   ConnectAccountResponse,
@@ -25,6 +24,7 @@ const providerLabels: Record<Provider, string> = {
 const errorMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
 const MIN_CACHE_FETCH = 1_000;
 const MAX_CACHE_FETCH = 50_000;
+const LOAD_MORE_CHUNK = 500;
 
 export function useAppState() {
   const {
@@ -60,6 +60,7 @@ export function useAppState() {
   });
 
   const automationState = useAutomationState();
+  const [loadingMoreEmails, setLoadingMoreEmails] = useState(false);
 
   // Derived state
   const currentEmails = useMemo(() => {
@@ -81,6 +82,11 @@ export function useAppState() {
     if (!uiState.selectedAccount) return currentEmails.length;
     return emailState.cachedCountsByAccount[uiState.selectedAccount] ?? currentEmails.length;
   }, [uiState.selectedAccount, emailState.cachedCountsByAccount, currentEmails.length]);
+
+  const hasMoreEmails = useMemo(() => {
+    if (!uiState.selectedAccount) return false;
+    return currentEmails.length < totalCachedCount;
+  }, [uiState.selectedAccount, currentEmails.length, totalCachedCount]);
 
   const syncReport = useMemo(() => {
     if (!uiState.selectedAccount) return null;
@@ -276,6 +282,37 @@ export function useAppState() {
     };
   }, [uiState.selectedAccount, emailState, syncOps]);
 
+  useEffect(() => {
+    setLoadingMoreEmails(false);
+  }, [uiState.selectedAccount]);
+
+  const handleLoadMoreEmails = useCallback(async () => {
+    if (!uiState.selectedAccount) return;
+    if (loadingMoreEmails) return;
+    if (!hasMoreEmails) return;
+
+    const accountEmail = uiState.selectedAccount;
+    setLoadingMoreEmails(true);
+
+    try {
+      const nextLimit = Math.min(
+        MAX_CACHE_FETCH,
+        totalCachedCount,
+        currentEmails.length + LOAD_MORE_CHUNK
+      );
+
+      if (nextLimit <= currentEmails.length) {
+        return;
+      }
+
+      await emailState.loadCachedEmails(accountEmail, nextLimit);
+    } catch (err) {
+      console.error("Failed to load more cached emails", err);
+    } finally {
+      setLoadingMoreEmails(false);
+    }
+  }, [uiState.selectedAccount, loadingMoreEmails, hasMoreEmails, totalCachedCount, currentEmails.length, emailState.loadCachedEmails]);
+
   return {
     // Account state
     accounts,
@@ -298,6 +335,8 @@ export function useAppState() {
     statusUpdating: syncOps.statusUpdating,
     pendingDeleteUid: syncOps.pendingDeleteUid,
     selectedAccountStatusPills,
+    hasMoreEmails,
+    isLoadingMoreEmails: loadingMoreEmails,
     
     // Automation state
     ...automationState,
@@ -340,6 +379,7 @@ export function useAppState() {
         await syncOps.handleDeleteMessage(uiState.selectedAccount, senderEmail, uid);
       }
     },
+    handleLoadMoreEmails,
     
     // Automation handlers
     handlePeriodicMinutesChange: (value: number) => {

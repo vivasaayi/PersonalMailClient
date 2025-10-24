@@ -156,21 +156,24 @@ export default function SenderGrid({
   );
 
   const statusTemplate = useCallback(
-    (props: GridSenderGroup) => {
-      return createElement('div', { style: { display: 'flex', justifyContent: 'center' } },
+    (props: GridSenderGroup) =>
+      createElement(
+        'div',
+        { style: { display: 'flex', justifyContent: 'center' } },
         createElement(EmailActionDropdown, {
           email: props.sender_email,
           currentStatus: props.status,
           size: 'small',
           showLabel: true,
           showIcon: true,
+          isUpdating: statusUpdating === props.sender_email,
+          onStatusChange: (nextStatus) => onStatusChange(props.sender_email, nextStatus),
           onActionComplete: () => {
             // Status change will trigger a re-render via parent state update
           }
         })
-      );
-    },
-    [],
+      ),
+    [onStatusChange, statusUpdating],
   );
 
   const detailTemplate = useCallback(
