@@ -5,7 +5,7 @@ use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::storage::Storage;
+use crate::{llm::LlmService, storage::Storage};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
@@ -138,14 +138,16 @@ pub struct AppState {
     pub accounts: RwLock<HashMap<String, Credentials>>,
     pub storage: Storage,
     pub sync_jobs: RwLock<HashMap<String, SyncHandle>>,
+    pub llm: LlmService,
 }
 
 impl AppState {
-    pub fn new(storage: Storage) -> Self {
+    pub fn new(storage: Storage, llm: LlmService) -> Self {
         Self {
             accounts: RwLock::new(HashMap::new()),
             storage,
             sync_jobs: RwLock::new(HashMap::new()),
+            llm,
         }
     }
 }

@@ -72,9 +72,21 @@ export default function NavigationDrawer({
       disabled: !selectedAccount,
     },
     {
+      id: 'blocked-domains',
+      label: 'Blocked Domains',
+      icon: '🏢',
+      disabled: !selectedAccount,
+    },
+    {
       id: 'settings',
       label: 'Settings',
       icon: '🔧',
+      disabled: false,
+    },
+    {
+      id: 'assistant',
+      label: 'AI Assistant',
+      icon: '🤖',
       disabled: false,
     },
   ];
@@ -271,7 +283,10 @@ export default function NavigationDrawer({
               padding: '8px 16px',
               border: 'none',
               borderRadius: '4px',
-              backgroundColor: currentView === item.id ? '#eff6ff' : 'transparent',
+              backgroundColor:
+                currentView === item.id
+                  ? '#eff6ff'
+                  : 'transparent',
               color: item.disabled ? '#9ca3af' : '#000000',
               textAlign: 'left',
               cursor: item.disabled ? 'not-allowed' : 'pointer',

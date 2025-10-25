@@ -77,3 +77,25 @@ export interface SyncProgress {
   stored: number;
   elapsed_ms: number;
 }
+
+export interface LlmStatus {
+  configured_path?: string | null;
+  loaded: boolean;
+  last_error?: string | null;
+}
+
+export interface KnownLlmModel {
+  id: string;
+  name: string;
+  description: string;
+  filename: string;
+  url: string;
+  size_bytes: number;
+  recommended_ram_gb: number;
+  context_length: number;
+  notes: string;
+  is_default: boolean;
+  downloaded: boolean;
+  active: boolean;
+  installed_size_bytes?: number | null;
+}

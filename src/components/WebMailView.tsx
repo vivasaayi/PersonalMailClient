@@ -6,6 +6,7 @@ import {
 } from "@syncfusion/ej2-react-lists";
 import type { SelectEventArgs } from "@syncfusion/ej2-react-lists";
 import { ButtonComponent } from "@syncfusion/ej2-react-buttons";
+import { invoke } from "@tauri-apps/api/tauri";
 import { DropDownButtonComponent } from "@syncfusion/ej2-react-splitbuttons";
 import dayjs from "dayjs";
 import type { EmailSummary, SenderStatus } from "../types";
@@ -59,6 +60,9 @@ export function WebMailView({
   const [selectedEmail, setSelectedEmail] = useState<EmailSummary | null>(null);
   const [groupMode, setGroupMode] = useState<GroupMode>("none");
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [llmAnalysis, setLlmAnalysis] = useState<string | null>(null);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const prevGroupModeRef = useRef<GroupMode>("none");
   const listViewRef = useRef<ListViewComponent | null>(null);
   const loadMoreInFlight = useRef(false);
@@ -237,7 +241,53 @@ export function WebMailView({
   const handleEmailSelect = useCallback((args: SelectEventArgs) => {
     const data = args.data as { email: EmailSummary };
     setSelectedEmail(data.email);
+    setLlmAnalysis(null);
+    setAnalysisError(null);
+    setIsAnalyzing(false);
   }, []);
+
+  const analyzeSelectedEmail = useCallback(async () => {
+    if (!selectedEmail) {
+      return;
+    }
+
+    setIsAnalyzing(true);
+    setAnalysisError(null);
+
+    const insight = messageInsights[selectedEmail.uid];
+    const senderLabel =
+      insight?.senderDisplay || selectedEmail.sender.display_name || selectedEmail.sender.email;
+    const snippetSource =
+      insight?.message.analysis_summary || insight?.message.snippet || "No snippet available.";
+    const trimmedSnippet =
+      snippetSource.length > 800 ? `${snippetSource.slice(0, 797)}...` : snippetSource;
+
+    const prompt = `Analyze this email and provide a brief assessment:
+
+Subject: ${selectedEmail.subject || "(No subject)"}
+From: ${senderLabel}
+Date: ${selectedEmail.date ? dayjs(selectedEmail.date).format("MMM D, YYYY h:mm A") : "Unknown"}
+Snippet: ${trimmedSnippet}
+
+Please answer these questions:
+1. Is this email spam? (Yes/No/Probably)
+2. What category does this email belong to? (e.g., work, personal, marketing, newsletter, etc.)
+3. Is this email important? (High/Medium/Low importance)
+
+Keep your response concise and format it clearly.`;
+
+    try {
+      const response = await invoke<string>("analyze_with_llm", {
+        prompt,
+        max_tokens: 256
+      });
+      setLlmAnalysis(response?.trim() || "No analysis available");
+    } catch (error) {
+      setAnalysisError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }, [messageInsights, selectedEmail]);
 
   const listTemplate = useCallback((data: { email: EmailSummary }) => {
     const email = data.email;
@@ -747,6 +797,58 @@ export function WebMailView({
               const insight = messageInsights[selectedEmail.uid];
               return (
                 <div>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "flex-end",
+                      marginBottom: "16px"
+                    }}
+                  >
+                    <ButtonComponent
+                      cssClass="e-primary e-small"
+                      disabled={isAnalyzing}
+                      onClick={analyzeSelectedEmail}
+                      content={isAnalyzing ? "Analyzing..." : "Analyze with AI"}
+                    />
+                  </div>
+                  {(llmAnalysis || analysisError) && (
+                    <div
+                      style={{
+                        padding: "16px",
+                        backgroundColor: "#f3f4f6",
+                        border: "1px solid #e5e7eb",
+                        borderRadius: "8px",
+                        marginBottom: "24px"
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: "12px",
+                          fontWeight: 600,
+                          color: "#111827",
+                          marginBottom: "8px"
+                        }}
+                      >
+                        AI Analysis
+                      </div>
+                      {analysisError ? (
+                        <div style={{ fontSize: "14px", color: "#dc2626" }}>
+                          Error: {analysisError}
+                        </div>
+                      ) : (
+                        <div
+                          style={{
+                            fontSize: "14px",
+                            color: "#111827",
+                            lineHeight: "1.6",
+                            whiteSpace: "pre-wrap"
+                          }}
+                        >
+                          {llmAnalysis}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {insight?.message.analysis_summary && (
                     <div
                       style={{

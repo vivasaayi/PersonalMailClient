@@ -10,11 +10,26 @@ import AutomationView from "./components/AutomationView";
 import AccountsView from "./components/AccountsView";
 import NotificationsHost from "./components/NotificationsHost";
 import BlockedSendersView from "./components/BlockedSendersView";
+import BlockedDomainsView from "./components/BlockedDomainsView";
+import LlmAssistantView from "./components/LlmAssistantView";
 export default function App() {
     const appState = useAppState();
     const periodicMinutes = appState.selectedAccount
         ? appState.periodicMinutesByAccount[appState.selectedAccount] ?? 0
         : 0;
+    const assistantActive = appState.currentView === "assistant";
+    const handleAssistantButtonClick = () => {
+        if (assistantActive) {
+            if (appState.selectedAccount) {
+                appState.handleNavigate("webmail");
+            }
+            else {
+                appState.handleNavigate("settings");
+            }
+            return;
+        }
+        appState.handleNavigate("assistant");
+    };
     return createElement("div", { style: { display: "flex", height: "100vh" } }, [
         // Navigation Drawer
         createElement(NavigationDrawer, {
@@ -66,7 +81,13 @@ export default function App() {
                         fontWeight: "500",
                         margin: "0 0 0 16px"
                     }
-                }, "Personal Mail Client")
+                }, "Personal Mail Client"),
+                createElement(ButtonComponent, {
+                    key: "assistant-toggle",
+                    cssClass: assistantActive ? "primary" : "outlined",
+                    content: assistantActive ? "Close Assistant" : "AI Assistant",
+                    onClick: handleAssistantButtonClick
+                })
             ]),
             // Content Area
             createElement("div", {
@@ -158,6 +179,9 @@ function renderViewContent(appState, periodicMinutes) {
             totalKnownMessages: appState.totalCachedCount
         });
     }
+    if (currentView === "assistant") {
+        return createElement(LlmAssistantView, { key: "assistant-view" });
+    }
     if (currentView === "accounts") {
         return createElement(AccountsView, {
             key: "accounts-view",
@@ -202,6 +226,19 @@ function renderViewContent(appState, periodicMinutes) {
             onStatusChange: appState.handleSenderStatusChange,
             statusUpdating: appState.statusUpdating,
             onRefresh: appState.handleRefreshEmails,
+            onDeleteMessage: appState.handleDeleteMessage,
+            hasSenderData: appState.currentSenderGroups.length > 0
+        });
+    }
+    if (currentView === "blocked-domains" && selectedAccount) {
+        return createElement(BlockedDomainsView, {
+            key: "blocked-domains-view",
+            senderGroups: appState.currentSenderGroups,
+            accountEmail: selectedAccount,
+            onStatusChange: appState.handleSenderStatusChange,
+            statusUpdating: appState.statusUpdating,
+            onRefresh: appState.handleRefreshEmails,
+            onDeleteMessage: appState.handleDeleteMessage,
             hasSenderData: appState.currentSenderGroups.length > 0
         });
     }

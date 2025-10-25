@@ -12,17 +12,29 @@ use personal_mail_client::models::{
     SavedAccount, SyncHandle, SyncReport,
 };
 use personal_mail_client::providers::{self, ProviderError};
-use personal_mail_client::storage::{AnalysisInsert, MessageInsert, SenderStatus, Storage};
+use personal_mail_client::storage::{
+    AccountRecord, AnalysisInsert, AnalysisValidation, ExistingAnalysisRecord, MessageForAnalysis,
+    MessageInsert, SenderStatus, Storage,
+};
 use serde::Serialize;
+use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::{Manager, State};
+use tokio::fs;
+use tokio::io::AsyncWriteExt;
 use tokio::time::{self, Duration, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn, Level};
+use uuid::Uuid;
 use warp::Filter;
+
+use chrono::Utc;
+use futures_util::StreamExt;
+use personal_mail_client::llm::{LlmService, LlmStatus};
 
 fn init_tracing() {
     let _ = tracing_subscriber::fmt()
@@ -45,6 +57,16 @@ struct MessageItem {
     analysis_summary: Option<String>,
     analysis_sentiment: Option<String>,
     analysis_categories: Vec<String>,
+    analysis_metadata: Option<Value>,
+    analysis_model_id: Option<String>,
+    analysis_analyzed: bool,
+    analysis_analyzed_at: Option<i64>,
+    analysis_confidence: Option<f64>,
+    analysis_validator_model_id: Option<String>,
+    analysis_validation_status: Option<String>,
+    analysis_validation_confidence: Option<f64>,
+    analysis_validation_notes: Option<String>,
+    analysis_validated_at: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -66,7 +88,861 @@ struct SyncProgressPayload {
     elapsed_ms: u64,
 }
 
+#[derive(Serialize)]
+struct KnownModelResponse {
+    id: &'static str,
+    name: &'static str,
+    description: &'static str,
+    filename: &'static str,
+    url: &'static str,
+    size_bytes: u64,
+    recommended_ram_gb: u16,
+    context_length: u32,
+    notes: &'static str,
+    is_default: bool,
+    downloaded: bool,
+    active: bool,
+    installed_size_bytes: Option<u64>,
+}
+
 const KEYCHAIN_SERVICE: &str = "PersonalMailClient";
+const LLM_MODEL_SETTING_KEY: &str = "llm_model_path";
+const DEFAULT_LLM_MODEL_ID: &str = "tinyllama-1.1b-q4";
+
+#[derive(Clone, Copy)]
+struct KnownModel {
+    id: &'static str,
+    display_name: &'static str,
+    description: &'static str,
+    filename: &'static str,
+    download_url: &'static str,
+    estimated_size_bytes: u64,
+    recommended_ram_gb: u16,
+    context_length: u32,
+    notes: &'static str,
+    is_default: bool,
+}
+
+const KNOWN_MODELS: &[KnownModel] = &[
+    KnownModel {
+        id: "tinyllama-1.1b-q4",
+        display_name: "TinyLlama 1.1B Chat (Q4_K_M)",
+        description: "Fastest option for quick label checks and lightweight analysis.",
+        filename: "tinyllama-1.1b-chat-q4_k_m.gguf",
+        download_url: "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf?download=1",
+        estimated_size_bytes: 205_000_000,
+        recommended_ram_gb: 4,
+        context_length: 2048,
+        notes: "Great on low-power devices, but offers the least nuanced reasoning.",
+        is_default: true,
+    },
+    KnownModel {
+        id: "mistral-7b-instruct-q4",
+        display_name: "Mistral 7B Instruct v0.2 (Q4_K_M)",
+        description: "High-quality summaries and classifications on modern hardware.",
+        filename: "mistral-7b-instruct-v0.2-q4_k_m.gguf",
+        download_url: "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF/resolve/main/mistral-7b-instruct-v0.2.Q4_K_M.gguf?download=1",
+        estimated_size_bytes: 4_100_000_000,
+        recommended_ram_gb: 8,
+        context_length: 8192,
+        notes: "Best balance for most users – strong reasoning with moderate memory needs.",
+        is_default: false,
+    },
+    KnownModel {
+        id: "llama3-8b-instruct-q8",
+        display_name: "Llama 3 8B Instruct (Q8_0)",
+        description: "Premium quality responses with deep understanding and tone control.",
+        filename: "llama3-8b-instruct-q8_0.gguf",
+        download_url: "https://huggingface.co/TheBloke/Meta-Llama-3-8B-Instruct-GGUF/resolve/main/Meta-Llama-3-8B-Instruct.Q8_0.gguf?download=1",
+        estimated_size_bytes: 9_100_000_000,
+        recommended_ram_gb: 14,
+        context_length: 8192,
+        notes: "Requires plenty of RAM/VRAM – ideal when you want the best accuracy locally.",
+        is_default: false,
+    },
+];
+
+const DEFAULT_BULK_TAGS: &[&str] = &[
+    "billing",
+    "meeting",
+    "travel",
+    "urgent",
+    "security",
+    "personal",
+    "newsletter",
+    "promotions",
+    "social",
+    "updates",
+    "receipts",
+    "action-required",
+    "follow-up",
+    "waiting-for-response",
+    "system-alert",
+    "legal",
+    "support-request",
+    "shipping",
+    "marketing",
+    "event",
+];
+const BULK_PRIORITY_VALUES: &[&str] = &["low", "normal", "high", "critical"];
+const BULK_ACTIONABILITY_VALUES: &[&str] = &[
+    "informational",
+    "needs-response",
+    "waiting",
+    "delegate",
+    "auto-archive",
+];
+const BULK_RISK_VALUES: &[&str] = &["none", "sensitive", "financial", "PII", "security-critical", "phishing-suspect"];
+const BULK_SOURCE_VALUES: &[&str] = &["human", "automated system", "bot/no-reply"];
+const BULK_THREAD_ROLE_VALUES: &[&str] = &["new thread", "reply", "forward", "digest"];
+const BULK_LIFECYCLE_VALUES: &[&str] = &["new", "snoozed", "pending", "done", "archived"];
+const DEFAULT_BULK_COMPLETION_TOKENS: usize = 512;
+const DEFAULT_BULK_SNIPPET_CHARS: usize = 2048;
+
+#[derive(Debug)]
+struct NormalizedBulkAnalysis {
+    summary: Option<String>,
+    sentiment: Option<String>,
+    tags: Vec<String>,
+    confidence: Option<f64>,
+    metadata: Value,
+}
+
+fn emit_bulk_event(app: &tauri::AppHandle, payload: Value) {
+    if let Err(err) = app.emit_all("llm-bulk-analysis-progress", payload) {
+        warn!(?err, "failed to emit llm bulk analysis event");
+    }
+}
+
+fn clip_text(input: &str, max_len: usize) -> String {
+    if input.len() <= max_len {
+        return input.trim().to_string();
+    }
+    let mut result = input
+        .chars()
+        .take(max_len.saturating_sub(1))
+        .collect::<String>();
+    result.push('…');
+    result
+}
+
+fn sanitize_enum_value(value: Option<&str>, allowed: &[&str]) -> Option<String> {
+    let candidate = value?.trim();
+    if candidate.is_empty() {
+        return None;
+    }
+    let lower = candidate.to_lowercase();
+    allowed
+        .iter()
+        .find(|item| item.to_lowercase() == lower)
+        .map(|item| (*item).to_string())
+}
+
+fn sanitize_sentiment(value: Option<&str>) -> Option<String> {
+    let candidate = value?.trim();
+    if candidate.is_empty() {
+        return None;
+    }
+    match candidate.to_lowercase().as_str() {
+        "positive" | "pos" => Some("positive".to_string()),
+        "negative" | "neg" => Some("negative".to_string()),
+        "neutral" => Some("neutral".to_string()),
+        "unknown" | "mixed" => Some("unknown".to_string()),
+        _ => None,
+    }
+}
+
+fn value_to_string(value: Option<&Value>) -> Option<String> {
+    match value {
+        Some(Value::String(text)) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Some(Value::Number(number)) => Some(number.to_string()),
+        Some(Value::Bool(flag)) => Some(flag.to_string()),
+        _ => None,
+    }
+}
+
+fn value_to_vec(value: Option<&Value>) -> Vec<String> {
+    match value {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| value_to_string(Some(item)))
+            .collect(),
+        Some(Value::String(text)) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                Vec::new()
+            } else if trimmed.contains(',') {
+                trimmed
+                    .split(',')
+                    .filter_map(|part| {
+                        let part = part.trim();
+                        if part.is_empty() {
+                            None
+                        } else {
+                            Some(part.to_string())
+                        }
+                    })
+                    .collect()
+            } else {
+                vec![trimmed.to_string()]
+            }
+        }
+        Some(Value::Null) | None => Vec::new(),
+        Some(other) => value_to_string(Some(other))
+            .map(|single| vec![single])
+            .unwrap_or_default(),
+    }
+}
+
+fn value_to_f64(value: Option<&Value>) -> Option<f64> {
+    match value {
+        Some(Value::Number(number)) => number.as_f64(),
+        Some(Value::String(text)) => text.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+fn value_to_object(value: Option<&Value>) -> Value {
+    match value {
+        Some(Value::Object(_)) => value.cloned().unwrap_or(Value::Null),
+        Some(Value::Null) | None => json!({}),
+        Some(other) => json!({ "raw": other }),
+    }
+}
+
+fn sanitize_tags(raw_tags: &[String], allowed_tags: &[String]) -> Vec<String> {
+    let mut output = Vec::new();
+    for allowed in allowed_tags {
+        if raw_tags
+            .iter()
+            .any(|candidate| candidate.trim().eq_ignore_ascii_case(allowed))
+        {
+            output.push(allowed.clone());
+        }
+    }
+    output
+}
+
+fn parse_bulk_json(raw: &str) -> Result<Value, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("model response was empty".to_string());
+    }
+    if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
+        return Ok(parsed);
+    }
+    if let Some(slice) = extract_json_object(trimmed) {
+        return serde_json::from_str::<Value>(&slice)
+            .map_err(|err| format!("failed to parse JSON object from model: {err}"));
+    }
+    Err("model response did not contain valid JSON".to_string())
+}
+
+fn extract_json_object(raw: &str) -> Option<String> {
+    let mut start = None;
+    let mut depth = 0isize;
+    for (idx, ch) in raw.char_indices() {
+        match ch {
+            '{' => {
+                if start.is_none() {
+                    start = Some(idx);
+                }
+                depth += 1;
+            }
+            '}' => {
+                if depth > 0 {
+                    depth -= 1;
+                    if depth == 0 {
+                        let end = idx;
+                        return start.map(|s| raw[s..=end].to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn normalize_bulk_output(raw: Value, allowed_tags: &[String]) -> Result<NormalizedBulkAnalysis, String> {
+    let object = raw
+        .as_object()
+        .ok_or_else(|| "model response must be a JSON object".to_string())?;
+
+    let summary = value_to_string(object.get("summary")).map(|value| clip_text(&value, 320));
+    let sentiment = sanitize_sentiment(value_to_string(object.get("sentiment")).as_deref());
+    let raw_tags = value_to_vec(object.get("tags"));
+    let tags = sanitize_tags(&raw_tags, allowed_tags);
+
+    let priority = sanitize_enum_value(
+        value_to_string(object.get("priority")).as_deref(),
+        BULK_PRIORITY_VALUES,
+    );
+    let actionability = sanitize_enum_value(
+        value_to_string(object.get("actionability")).as_deref(),
+        BULK_ACTIONABILITY_VALUES,
+    );
+    let risk = sanitize_enum_value(
+        value_to_string(object.get("risk")).as_deref(),
+        BULK_RISK_VALUES,
+    );
+    let source_type = sanitize_enum_value(
+        value_to_string(object.get("source_type")).as_deref(),
+        BULK_SOURCE_VALUES,
+    );
+    let thread_role = sanitize_enum_value(
+        value_to_string(object.get("thread_role")).as_deref(),
+        BULK_THREAD_ROLE_VALUES,
+    );
+    let lifecycle = sanitize_enum_value(
+        value_to_string(object.get("lifecycle")).as_deref(),
+        BULK_LIFECYCLE_VALUES,
+    );
+
+    let confidence = value_to_f64(object.get("confidence")).map(|value| value.clamp(0.0, 1.0));
+    let rationale = value_to_string(object.get("rationale"));
+    let extractions = value_to_object(object.get("extractions"));
+
+    let mut metadata = json!({
+        "version": 1,
+        "priority": priority,
+        "actionability": actionability,
+        "risk": risk,
+        "source_type": source_type,
+        "thread_role": thread_role,
+        "lifecycle": lifecycle,
+        "confidence": confidence,
+        "rationale": rationale,
+        "extractions": extractions,
+        "raw_model_output": raw,
+    });
+
+    if let Some(extractions_value) = metadata.get_mut("extractions") {
+        if extractions_value.is_null() {
+            *extractions_value = json!({});
+        }
+    }
+
+    Ok(NormalizedBulkAnalysis {
+        summary,
+        sentiment,
+        tags,
+        confidence,
+        metadata,
+    })
+}
+
+fn build_bulk_prompt(allowed_tags: &[String], message: &MessageForAnalysis, snippet_limit: usize) -> String {
+    let mut sorted_tags = allowed_tags.to_vec();
+    sorted_tags.sort();
+    let tags_block = if sorted_tags.is_empty() {
+        "(no predefined tags)".to_string()
+    } else {
+        sorted_tags
+            .iter()
+            .map(|tag| format!("- {tag}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let subject = {
+        let trimmed = message.subject.trim();
+        if trimmed.is_empty() {
+            "(no subject)".to_string()
+        } else {
+            clip_text(trimmed, 240)
+        }
+    };
+
+    let sender_name = message
+        .sender_display
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .unwrap_or("(unknown sender)");
+    let sender_email = &message.sender_email;
+    let message_id = message.message_id;
+    let date = message.date.as_deref().unwrap_or("(unknown date)");
+    let snippet = message.snippet.as_deref().unwrap_or("(no snippet available)");
+    let clipped_snippet = clip_text(snippet, snippet_limit);
+
+    format!(
+        r#"You are an email triage system. Analyze the email below and respond with JSON only. Strictly follow these rules:
+- Return a single JSON object.
+- Every field must be present even if the value is null.
+- Use only the enumerated values provided.
+- Populate tags exclusively from the allowed list.
+- If information is missing, use null instead of guessing.
+
+Fields to return:
+{{
+  "summary": string|null,
+  "sentiment": one of [positive, neutral, negative, unknown] | null,
+  "tags": [ ... allowed tags ... ],
+  "priority": one of [{priority_values}] | null,
+  "actionability": one of [{actionability_values}] | null,
+  "risk": one of [{risk_values}] | null,
+  "source_type": one of [{source_values}] | null,
+  "thread_role": one of [{thread_values}] | null,
+  "lifecycle": one of [{lifecycle_values}] | null,
+  "confidence": number from 0-1 | null,
+  "rationale": short string|null,
+  "extractions": object with any additional structured data you deem useful
+}}
+
+Allowed tags:
+{tags_block}
+
+Email Context:
+- Message ID: {message_id}
+- IMAP UID: {uid}
+- Sender: {sender_name} <{sender_email}>
+- Date: {date}
+- Subject: {subject}
+
+Email Snippet (trimmed for length):
+"""
+{clipped_snippet}
+"""
+"#,
+        priority_values = BULK_PRIORITY_VALUES.join(", "),
+        actionability_values = BULK_ACTIONABILITY_VALUES.join(", "),
+        risk_values = BULK_RISK_VALUES.join(", "),
+        source_values = BULK_SOURCE_VALUES.join(", "),
+        thread_values = BULK_THREAD_ROLE_VALUES.join(", "),
+        lifecycle_values = BULK_LIFECYCLE_VALUES.join(", "),
+        tags_block = tags_block,
+        message_id = message_id,
+        uid = message.uid.as_str(),
+        sender_name = sender_name,
+        sender_email = sender_email,
+        date = date,
+        subject = subject,
+        clipped_snippet = clipped_snippet,
+    )
+}
+
+fn infer_model_id_from_status(status: &LlmStatus) -> Option<String> {
+    let path = status.configured_path.as_ref()?;
+    let path = Path::new(path);
+    let filename = path.file_name()?.to_string_lossy();
+
+    KNOWN_MODELS
+        .iter()
+        .find(|model| model.filename == filename)
+        .map(|model| model.id.to_string())
+        .or_else(|| Some(filename.to_string()))
+}
+
+async fn execute_bulk_analysis(
+    app: tauri::AppHandle,
+    storage: Storage,
+    llm: LlmService,
+    run_id: String,
+    allowed_tags: Vec<String>,
+    max_tokens: usize,
+    snippet_limit: usize,
+    force: bool,
+    model_id: Option<String>,
+    validator_model_id: Option<String>,
+) -> Result<(), String> {
+    let started = Instant::now();
+    let accounts = storage
+        .list_accounts()
+        .await
+        .map_err(|err| err.to_string())?;
+
+    let mut targets = Vec::new();
+    let mut skipped_existing = 0usize;
+
+    for account in &accounts {
+        let messages = storage
+            .messages_for_analysis(&account.email)
+            .await
+            .map_err(|err| err.to_string())?;
+        for message in messages {
+            if !force && message.existing_analysis.analyzed {
+                skipped_existing += 1;
+                continue;
+            }
+            targets.push(message);
+        }
+    }
+
+    let total = targets.len();
+    let account_emails: Vec<String> = accounts.into_iter().map(|account| account.email).collect();
+
+    emit_bulk_event(
+        &app,
+        json!({
+            "runId": run_id.clone(),
+            "status": "starting",
+            "total": total,
+            "completed": 0,
+            "failed": 0,
+            "skipped": skipped_existing,
+            "pending": total,
+            "accounts": account_emails,
+            "modelId": model_id.clone(),
+            "validatorModelId": validator_model_id.clone(),
+            "force": force,
+            "timestamp": Utc::now().timestamp(),
+        }),
+    );
+
+    if total == 0 {
+        emit_bulk_event(
+            &app,
+            json!({
+                "runId": run_id.clone(),
+                "status": "completed",
+                "total": 0,
+                "completed": 0,
+                "failed": 0,
+                "skipped": skipped_existing,
+                "pending": 0,
+                "durationMs": started.elapsed().as_millis(),
+                "modelId": model_id.clone(),
+                "validatorModelId": validator_model_id.clone(),
+                "timestamp": Utc::now().timestamp(),
+            }),
+        );
+        return Ok(());
+    }
+
+    let mut completed = 0usize;
+    let mut failed = 0usize;
+
+    for message in targets {
+        let prompt = build_bulk_prompt(&allowed_tags, &message, snippet_limit);
+        let account_email = message.account_email.clone();
+        let message_uid = message.uid.clone();
+
+        let response = match llm.analyze_prompt(prompt, Some(max_tokens)).await {
+            Ok(text) => text,
+            Err(err) => {
+                failed += 1;
+                let pending = total.saturating_sub(completed + failed);
+                emit_bulk_event(
+                    &app,
+                    json!({
+                        "runId": run_id.clone(),
+                        "status": "error",
+                        "stage": "llm",
+                        "error": err,
+                        "accountEmail": account_email,
+                        "messageUid": message_uid,
+                        "total": total,
+                        "completed": completed,
+                        "failed": failed,
+                        "skipped": skipped_existing,
+                        "pending": pending,
+                        "timestamp": Utc::now().timestamp(),
+                        "modelId": model_id.clone(),
+                        "validatorModelId": validator_model_id.clone(),
+                    }),
+                );
+                continue;
+            }
+        };
+
+        let parsed = match parse_bulk_json(&response) {
+            Ok(value) => value,
+            Err(err) => {
+                failed += 1;
+                let pending = total.saturating_sub(completed + failed);
+                emit_bulk_event(
+                    &app,
+                    json!({
+                        "runId": run_id.clone(),
+                        "status": "error",
+                        "stage": "parse",
+                        "error": err,
+                        "accountEmail": account_email,
+                        "messageUid": message_uid,
+                        "total": total,
+                        "completed": completed,
+                        "failed": failed,
+                        "skipped": skipped_existing,
+                        "pending": pending,
+                        "timestamp": Utc::now().timestamp(),
+                        "modelId": model_id.clone(),
+                        "validatorModelId": validator_model_id.clone(),
+                    }),
+                );
+                continue;
+            }
+        };
+
+        let normalized = match normalize_bulk_output(parsed, &allowed_tags) {
+            Ok(value) => value,
+            Err(err) => {
+                failed += 1;
+                let pending = total.saturating_sub(completed + failed);
+                emit_bulk_event(
+                    &app,
+                    json!({
+                        "runId": run_id.clone(),
+                        "status": "error",
+                        "stage": "normalize",
+                        "error": err,
+                        "accountEmail": account_email,
+                        "messageUid": message_uid,
+                        "total": total,
+                        "completed": completed,
+                        "failed": failed,
+                        "skipped": skipped_existing,
+                        "pending": pending,
+                        "timestamp": Utc::now().timestamp(),
+                        "modelId": model_id.clone(),
+                        "validatorModelId": validator_model_id.clone(),
+                    }),
+                );
+                continue;
+            }
+        };
+
+        let summary = normalized.summary.clone();
+        let sentiment = normalized.sentiment.clone();
+        let tags = normalized.tags.clone();
+        let confidence = normalized.confidence;
+
+        let mut metadata = normalized.metadata.clone();
+        if let Some(object) = metadata.as_object_mut() {
+            object.insert("run_id".to_string(), json!(run_id.clone()));
+            object.insert("account_email".to_string(), json!(account_email.clone()));
+            object.insert("uid".to_string(), json!(message_uid.clone()));
+            object.insert("tags".to_string(), json!(tags.clone()));
+            object.insert("summary".to_string(), json!(summary.clone()));
+            object.insert("sentiment".to_string(), json!(sentiment.clone()));
+            object.insert(
+                "previous_categories".to_string(),
+                json!(message.existing_analysis.categories.clone()),
+            );
+            if let Some(previous_metadata) = &message.existing_analysis.metadata {
+                object.insert("previous_metadata".to_string(), previous_metadata.clone());
+            }
+            if let Some(model) = &model_id {
+                object.insert("model_id".to_string(), json!(model));
+            }
+        }
+
+        let validation = if let Some(validator) = &validator_model_id {
+            AnalysisValidation {
+                validator_model_id: Some(validator.clone()),
+                status: Some("pending".to_string()),
+                confidence: None,
+                notes: None,
+                validated_at: None,
+            }
+        } else {
+            AnalysisValidation::default()
+        };
+
+        let analysis = AnalysisInsert {
+            account_email: message.account_email.clone(),
+            uid: message.uid.clone(),
+            summary: summary.clone(),
+            sentiment: sentiment.clone(),
+            categories: tags.clone(),
+            metadata_json: metadata.clone(),
+            model_id: model_id.clone(),
+            analyzed: true,
+            analyzed_at: Some(Utc::now().timestamp()),
+            analysis_confidence: confidence,
+            validation,
+        };
+
+        if let Err(err) = storage
+            .upsert_analysis(vec![analysis])
+            .await
+            .map_err(|err| err.to_string())
+        {
+            failed += 1;
+            let pending = total.saturating_sub(completed + failed);
+            emit_bulk_event(
+                &app,
+                json!({
+                    "runId": run_id.clone(),
+                    "status": "error",
+                    "stage": "storage",
+                    "error": err,
+                    "accountEmail": account_email,
+                    "messageUid": message_uid,
+                    "total": total,
+                    "completed": completed,
+                    "failed": failed,
+                    "skipped": skipped_existing,
+                    "pending": pending,
+                    "timestamp": Utc::now().timestamp(),
+                    "modelId": model_id.clone(),
+                    "validatorModelId": validator_model_id.clone(),
+                }),
+            );
+            continue;
+        }
+
+        completed += 1;
+        let pending = total.saturating_sub(completed + failed);
+
+        emit_bulk_event(
+            &app,
+            json!({
+                "runId": run_id.clone(),
+                "status": "processed",
+                "accountEmail": account_email,
+                "messageUid": message_uid,
+                "total": total,
+                "completed": completed,
+                "failed": failed,
+                "skipped": skipped_existing,
+                "pending": pending,
+                "timestamp": Utc::now().timestamp(),
+                "modelId": model_id.clone(),
+                "validatorModelId": validator_model_id.clone(),
+                "result": {
+                    "summary": summary,
+                    "sentiment": sentiment,
+                    "tags": tags,
+                    "confidence": confidence,
+                    "metadata": metadata,
+                }
+            }),
+        );
+    }
+
+    let pending = total.saturating_sub(completed + failed);
+    emit_bulk_event(
+        &app,
+        json!({
+            "runId": run_id,
+            "status": "completed",
+            "total": total,
+            "completed": completed,
+            "failed": failed,
+            "skipped": skipped_existing,
+            "pending": pending,
+            "durationMs": started.elapsed().as_millis(),
+            "modelId": model_id,
+            "validatorModelId": validator_model_id,
+            "timestamp": Utc::now().timestamp(),
+        }),
+    );
+
+    Ok(())
+}
+
+fn known_model_by_id(id: &str) -> Option<&'static KnownModel> {
+    KNOWN_MODELS.iter().find(|model| model.id == id)
+}
+
+async fn ensure_model_downloaded(
+    app: &tauri::AppHandle,
+    model: &KnownModel,
+    force: bool,
+) -> Result<PathBuf, String> {
+    let models_dir = models_directory(app)?;
+    fs::create_dir_all(&models_dir)
+        .await
+        .map_err(|err| format!("failed to prepare models directory: {err}"))?;
+
+    let target_path = models_dir.join(model.filename);
+    let target_exists = fs::metadata(&target_path).await.is_ok();
+    if target_exists && !force {
+        return Ok(target_path);
+    }
+
+    let tmp_path = target_path.with_extension("tmp");
+    if target_exists {
+        fs::remove_file(&target_path)
+            .await
+            .map_err(|err| format!("failed to remove existing model: {err}"))?;
+    }
+    if fs::metadata(&tmp_path).await.is_ok() {
+        let _ = fs::remove_file(&tmp_path).await;
+    }
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(model.download_url)
+        .send()
+        .await
+        .map_err(|err| format!("failed to download model: {err}"))?;
+    let response = response
+        .error_for_status()
+        .map_err(|err| format!("download returned error status: {err}"))?;
+
+    let total_size = response.content_length().unwrap_or(0);
+    let mut downloaded = 0u64;
+
+    let mut file = fs::File::create(&tmp_path)
+        .await
+        .map_err(|err| format!("failed to create temporary model file: {err}"))?;
+
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|err| format!("error while downloading model: {err}"))?;
+        file.write_all(&chunk)
+            .await
+            .map_err(|err| format!("failed writing model data: {err}"))?;
+
+        downloaded += chunk.len() as u64;
+
+        // Emit progress event
+        if total_size > 0 {
+            let progress = (downloaded as f64 / total_size as f64 * 100.0) as u32;
+            let _ = app.emit_all("model-download-progress", serde_json::json!({
+                "model_id": model.id,
+                "downloaded": downloaded,
+                "total": total_size,
+                "progress": progress
+            }));
+        }
+    }
+
+    file.flush()
+        .await
+        .map_err(|err| format!("failed to flush model file: {err}"))?;
+    drop(file);
+
+    fs::rename(&tmp_path, &target_path)
+        .await
+        .map_err(|err| format!("failed to finalize model file: {err}"))?;
+
+    // Emit completion event
+    let _ = app.emit_all("model-download-progress", serde_json::json!({
+        "model_id": model.id,
+        "downloaded": total_size,
+        "total": total_size,
+        "progress": 100
+    }));
+
+    Ok(target_path)
+}
+
+fn expand_path(input: &str) -> Result<PathBuf, String> {
+    if let Some(stripped) = input.strip_prefix("~/") {
+        let home =
+            std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
+        Ok(PathBuf::from(home).join(stripped))
+    } else {
+        Ok(PathBuf::from(input))
+    }
+}
+
+fn models_directory(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let base = app
+        .path_resolver()
+        .app_data_dir()
+        .ok_or_else(|| "App data directory not available".to_string())?;
+    Ok(base.join("models"))
+}
 
 fn keychain_entry(email: &str) -> Result<Entry, String> {
     Entry::new(KEYCHAIN_SERVICE, email).map_err(|err| err.to_string())
@@ -259,7 +1135,7 @@ async fn connect_account_saved(
 
 #[tauri::command]
 async fn test_account_connection(
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
     provider: Provider,
     email: String,
     password: Option<String>,
@@ -668,6 +1544,16 @@ async fn list_sender_groups(
                 analysis_summary: message.analysis_summary,
                 analysis_sentiment: message.analysis_sentiment,
                 analysis_categories: message.analysis_categories,
+                analysis_metadata: message.analysis_metadata,
+                analysis_model_id: message.analysis_model_id,
+                analysis_analyzed: message.analysis_analyzed,
+                analysis_analyzed_at: message.analysis_analyzed_at,
+                analysis_confidence: message.analysis_confidence,
+                analysis_validator_model_id: message.analysis_validator_model_id,
+                analysis_validation_status: message.analysis_validation_status,
+                analysis_validation_confidence: message.analysis_validation_confidence,
+                analysis_validation_notes: message.analysis_validation_notes,
+                analysis_validated_at: message.analysis_validated_at,
             })
             .collect::<Vec<_>>();
 
@@ -1093,6 +1979,12 @@ fn build_records(
         summary: analysis_summary,
         sentiment: analysis_sentiment,
         categories,
+        metadata_json: Value::Null,
+        model_id: None,
+        analyzed: false,
+        analyzed_at: None,
+        analysis_confidence: None,
+        validation: AnalysisValidation::default(),
     };
 
     (insert, analysis)
@@ -1179,6 +2071,161 @@ fn analyze_message(
     (summary, sentiment, categories)
 }
 
+#[tauri::command]
+async fn get_llm_status(state: State<'_, AppState>) -> Result<LlmStatus, String> {
+    Ok(state.llm.status())
+}
+
+#[tauri::command]
+async fn list_known_llm_models(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<KnownModelResponse>, String> {
+    let models_dir = models_directory(&app)?;
+    fs::create_dir_all(&models_dir)
+        .await
+        .map_err(|err| format!("failed to prepare models directory: {err}"))?;
+
+    let active_path = state.llm.configured_path();
+    let mut responses = Vec::new();
+
+    for model in KNOWN_MODELS {
+        let candidate = models_dir.join(model.filename);
+        let metadata = fs::metadata(&candidate).await.ok();
+        let downloaded = metadata.is_some();
+        let installed_size_bytes = metadata.as_ref().map(|entry| entry.len());
+        let active = active_path
+            .as_ref()
+            .map(|path| path == &candidate)
+            .unwrap_or(false);
+
+        responses.push(KnownModelResponse {
+            id: model.id,
+            name: model.display_name,
+            description: model.description,
+            filename: model.filename,
+            url: model.download_url,
+            size_bytes: model.estimated_size_bytes,
+            recommended_ram_gb: model.recommended_ram_gb,
+            context_length: model.context_length,
+            notes: model.notes,
+            is_default: model.is_default,
+            downloaded,
+            active,
+            installed_size_bytes,
+        });
+    }
+
+    Ok(responses)
+}
+
+#[tauri::command]
+async fn set_llm_model_path(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    path: Option<String>,
+) -> Result<LlmStatus, String> {
+    let models_dir = models_directory(&app)?;
+    fs::create_dir_all(&models_dir)
+        .await
+        .map_err(|err| format!("failed to prepare models directory: {err}"))?;
+
+    match path {
+        Some(path_str) => {
+            let expanded = expand_path(&path_str)?;
+            let candidate = if expanded.is_absolute() {
+                expanded.clone()
+            } else {
+                models_dir.join(&expanded)
+            };
+
+            let metadata = fs::metadata(&candidate)
+                .await
+                .map_err(|_| format!("model file not found at {}", candidate.display()))?;
+            if !metadata.is_file() {
+                return Err(format!("model path is not a file: {}", candidate.display()));
+            }
+
+            state
+                .llm
+                .set_model_path(Some(candidate.clone()))
+                .map_err(|err| err)?;
+
+            let stored_value = if candidate.starts_with(&models_dir) {
+                candidate
+                    .strip_prefix(&models_dir)
+                    .ok()
+                    .map(|p| {
+                        p.to_string_lossy()
+                            .trim_start_matches(std::path::MAIN_SEPARATOR)
+                            .to_string()
+                    })
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| candidate.to_string_lossy().to_string())
+            } else if expanded.is_relative() {
+                expanded.to_string_lossy().to_string()
+            } else {
+                candidate.to_string_lossy().to_string()
+            };
+
+            state
+                .storage
+                .set_setting(LLM_MODEL_SETTING_KEY, Some(&stored_value))
+                .await
+                .map_err(|err| err.to_string())?;
+        }
+        None => {
+            state.llm.set_model_path(None).map_err(|err| err)?;
+            state
+                .storage
+                .set_setting(LLM_MODEL_SETTING_KEY, None)
+                .await
+                .map_err(|err| err.to_string())?;
+        }
+    }
+
+    Ok(state.llm.status())
+}
+
+#[tauri::command]
+async fn download_default_llm_model(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<LlmStatus, String> {
+    let model = known_model_by_id(DEFAULT_LLM_MODEL_ID)
+        .ok_or_else(|| "default model metadata not available".to_string())?;
+    ensure_model_downloaded(&app, model, false).await?;
+    set_llm_model_path(app, state, Some(model.filename.to_string())).await
+}
+
+#[tauri::command]
+async fn download_llm_model(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    model_id: String,
+    activate: Option<bool>,
+    force: Option<bool>,
+) -> Result<LlmStatus, String> {
+    let model =
+        known_model_by_id(&model_id).ok_or_else(|| format!("unknown model id: {model_id}"))?;
+    ensure_model_downloaded(&app, model, force.unwrap_or(false)).await?;
+
+    if activate.unwrap_or(false) {
+        set_llm_model_path(app, state, Some(model.filename.to_string())).await
+    } else {
+        Ok(state.llm.status())
+    }
+}
+
+#[tauri::command]
+async fn analyze_with_llm(
+    state: State<'_, AppState>,
+    prompt: String,
+    max_tokens: Option<usize>,
+) -> Result<String, String> {
+    state.llm.analyze_prompt(prompt, max_tokens).await
+}
+
 fn main() {
     init_tracing();
 
@@ -1186,7 +2233,41 @@ fn main() {
         .setup(|app| {
             let storage = Storage::initialize(&app.app_handle())
                 .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
-            app.manage(AppState::new(storage));
+
+            let data_dir = app.path_resolver().app_data_dir().ok_or_else(
+                || -> Box<dyn std::error::Error> {
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "App data directory not available",
+                    ))
+                },
+            )?;
+            let models_dir = data_dir.join("models");
+            std::fs::create_dir_all(&models_dir)?;
+
+            let llm_service = LlmService::new();
+
+            let stored_model_path = tauri::async_runtime::block_on(async {
+                storage
+                    .get_setting(LLM_MODEL_SETTING_KEY)
+                    .await
+                    .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })
+            })?;
+
+            if let Some(path_string) = stored_model_path {
+                let candidate = PathBuf::from(&path_string);
+                let resolved_path = if candidate.is_absolute() {
+                    candidate
+                } else {
+                    models_dir.join(candidate)
+                };
+
+                if let Err(err) = llm_service.set_model_path(Some(resolved_path.clone())) {
+                    warn!(?err, "failed to preload configured LLM model");
+                }
+            }
+
+            app.manage(AppState::new(storage.clone(), llm_service));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1206,7 +2287,13 @@ fn main() {
             configure_periodic_sync,
             apply_block_filter,
             disconnect_account,
-            oauth
+            oauth,
+            get_llm_status,
+            list_known_llm_models,
+            set_llm_model_path,
+            download_llm_model,
+            download_default_llm_model,
+            analyze_with_llm
         ])
         .run(tauri::generate_context!())
         .expect("error while running personal mail client application");

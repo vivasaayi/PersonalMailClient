@@ -12,7 +12,7 @@ export function useUIState(accounts: Account[]) {
   useEffect(() => {
     if (
       accounts.length === 0 &&
-      ["webmail", "pivot", "automation", "sync", "blocked"].includes(currentView)
+      ["webmail", "pivot", "automation", "sync", "blocked", "blocked-domains"].includes(currentView)
     ) {
       setCurrentView("accounts");
     }

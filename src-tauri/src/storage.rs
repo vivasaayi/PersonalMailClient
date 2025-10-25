@@ -15,7 +15,7 @@ use once_cell::sync::OnceCell;
 use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
 use secrecy::{ExposeSecret, SecretVec};
-use serde_json;
+use serde_json::{self, Value};
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -76,6 +76,15 @@ pub struct MessageInsert {
     pub flags: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct AnalysisValidation {
+    pub validator_model_id: Option<String>,
+    pub status: Option<String>,
+    pub confidence: Option<f64>,
+    pub notes: Option<String>,
+    pub validated_at: Option<i64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct AnalysisInsert {
     pub account_email: String,
@@ -83,6 +92,12 @@ pub struct AnalysisInsert {
     pub summary: Option<String>,
     pub sentiment: Option<String>,
     pub categories: Vec<String>,
+    pub metadata_json: serde_json::Value,
+    pub model_id: Option<String>,
+    pub analyzed: bool,
+    pub analyzed_at: Option<i64>,
+    pub analysis_confidence: Option<f64>,
+    pub validation: AnalysisValidation,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +114,39 @@ pub struct MessageRow {
     pub analysis_summary: Option<String>,
     pub analysis_sentiment: Option<String>,
     pub analysis_categories: Vec<String>,
+    pub analysis_metadata: Option<serde_json::Value>,
+    pub analysis_model_id: Option<String>,
+    pub analysis_analyzed: bool,
+    pub analysis_analyzed_at: Option<i64>,
+    pub analysis_confidence: Option<f64>,
+    pub analysis_validator_model_id: Option<String>,
+    pub analysis_validation_status: Option<String>,
+    pub analysis_validation_confidence: Option<f64>,
+    pub analysis_validation_notes: Option<String>,
+    pub analysis_validated_at: Option<i64>,
+    pub body_cached: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExistingAnalysisRecord {
+    pub analyzed: bool,
+    pub analyzed_at: Option<i64>,
+    pub model_id: Option<String>,
+    pub categories: Vec<String>,
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MessageForAnalysis {
+    pub message_id: i64,
+    pub account_email: String,
+    pub uid: String,
+    pub subject: String,
+    pub snippet: Option<String>,
+    pub date: Option<String>,
+    pub sender_email: String,
+    pub sender_display: Option<String>,
+    pub existing_analysis: ExistingAnalysisRecord,
 }
 
 #[derive(Debug, Clone)]
@@ -235,8 +283,29 @@ impl Storage {
                 summary TEXT,
                 sentiment TEXT,
                 categories TEXT,
+                metadata_json TEXT,
+                model_id TEXT,
+                analyzed INTEGER NOT NULL DEFAULT 0,
+                analyzed_at INTEGER,
+                analysis_confidence REAL,
+                validator_model_id TEXT,
+                validation_status TEXT,
+                validation_confidence REAL,
+                validation_notes TEXT,
+                validated_at INTEGER,
                 FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
             );
+
+            ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS metadata_json TEXT;
+            ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS model_id TEXT;
+            ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS analyzed INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS analyzed_at INTEGER;
+            ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS analysis_confidence REAL;
+            ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS validator_model_id TEXT;
+            ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS validation_status TEXT;
+            ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS validation_confidence REAL;
+            ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS validation_notes TEXT;
+            ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS validated_at INTEGER;
 
             CREATE TABLE IF NOT EXISTS account_sync_state (
                 account_email TEXT PRIMARY KEY,
@@ -253,6 +322,11 @@ impl Storage {
                 custom_port INTEGER,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
             );
             "#,
         )?;
@@ -349,9 +423,12 @@ impl Storage {
             let mut stmt = conn.prepare(
                 r#"
           SELECT m.id, m.uid, m.sender_email, m.sender_display, m.subject_encrypted, m.date,
-              m.snippet_encrypted, m.flags,
+              m.snippet_encrypted, m.body_encrypted IS NOT NULL AS body_cached, m.flags,
               COALESCE(ss.status, 'neutral'),
-              ar.summary, ar.sentiment, ar.categories
+              ar.summary, ar.sentiment, ar.categories,
+              ar.metadata_json, ar.model_id, COALESCE(ar.analyzed, 0), ar.analyzed_at,
+              ar.analysis_confidence, ar.validator_model_id, ar.validation_status,
+              ar.validation_confidence, ar.validation_notes, ar.validated_at
           FROM messages m
           LEFT JOIN sender_status ss ON ss.sender_email = m.sender_email
           LEFT JOIN analysis_results ar ON ar.message_id = m.id
@@ -371,7 +448,8 @@ impl Storage {
                     .unwrap_or_else(|| sender_email.clone());
                 if current_sender.as_ref() != Some(&sender_email) {
                     current_sender = Some(sender_email.clone());
-                    let status = SenderStatus::from_str(&row.get::<_, String>(8)?);
+                    let status_value: String = row.get(9)?;
+                    let status = SenderStatus::from_str(&status_value);
                     groups.push(SenderGroup {
                         sender_email: sender_email.clone(),
                         sender_display: display.clone(),
@@ -390,7 +468,10 @@ impl Storage {
                     .map(|value| cipher.decrypt_string(value))
                     .transpose()?;
 
-                let categories_json: Option<String> = row.get(11)?;
+                let body_cached: bool = row.get::<_, i64>(7)? != 0;
+                let flags: Option<String> = row.get(8)?;
+
+                let categories_json: Option<String> = row.get(12)?;
                 let analysis_categories = categories_json
                     .as_ref()
                     .map(|value| {
@@ -400,6 +481,26 @@ impl Storage {
                     .transpose()?
                     .unwrap_or_default();
 
+                let metadata_json: Option<String> = row.get(13)?;
+                let analysis_metadata = metadata_json
+                    .as_ref()
+                    .map(|value| {
+                        serde_json::from_str::<Value>(value)
+                            .map_err(|err| StorageError::Serialization(err.to_string()))
+                    })
+                    .transpose()?;
+
+                let analysis_model_id: Option<String> = row.get(14)?;
+                let analysis_analyzed_raw: i64 = row.get(15)?;
+                let analysis_analyzed = analysis_analyzed_raw != 0;
+                let analysis_analyzed_at: Option<i64> = row.get(16)?;
+                let analysis_confidence: Option<f64> = row.get(17)?;
+                let analysis_validator_model_id: Option<String> = row.get(18)?;
+                let analysis_validation_status: Option<String> = row.get(19)?;
+                let analysis_validation_confidence: Option<f64> = row.get(20)?;
+                let analysis_validation_notes: Option<String> = row.get(21)?;
+                let analysis_validated_at: Option<i64> = row.get(22)?;
+
                 let message = MessageRow {
                     id: row.get(0)?,
                     uid: row.get(1)?,
@@ -408,17 +509,119 @@ impl Storage {
                     subject,
                     date: row.get(5)?,
                     snippet,
-                    flags: row.get(7)?,
+                    flags,
                     status: group.status.clone(),
-                    analysis_summary: row.get(9)?,
-                    analysis_sentiment: row.get(10)?,
+                    analysis_summary: row.get(10)?,
+                    analysis_sentiment: row.get(11)?,
                     analysis_categories,
+                    analysis_metadata,
+                    analysis_model_id,
+                    analysis_analyzed,
+                    analysis_analyzed_at,
+                    analysis_confidence,
+                    analysis_validator_model_id,
+                    analysis_validation_status,
+                    analysis_validation_confidence,
+                    analysis_validation_notes,
+                    analysis_validated_at,
+                    body_cached,
                 };
 
                 group.messages.push(message);
             }
 
             Ok(groups)
+        })
+        .await
+        .map_err(map_join_error)?;
+
+        result
+    }
+
+    pub async fn messages_for_analysis(
+        &self,
+        account_email: &str,
+    ) -> Result<Vec<MessageForAnalysis>> {
+        let conn = self.conn.clone();
+        let cipher = self.cipher.clone();
+        let account = account_email.to_owned();
+        let result = tokio::task::spawn_blocking(move || -> Result<Vec<MessageForAnalysis>> {
+            let conn = conn.lock();
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT m.id, m.uid, m.subject_encrypted, m.snippet_encrypted, m.date,
+                       m.sender_email, m.sender_display,
+                       ar.analyzed, ar.analyzed_at, ar.model_id, ar.categories, ar.metadata_json
+                FROM messages m
+                LEFT JOIN analysis_results ar ON ar.message_id = m.id
+                WHERE m.account_email = ?
+                ORDER BY m.updated_at DESC, m.id DESC
+                "#,
+            )?;
+
+            let mut rows = stmt.query(params![account])?;
+            let mut messages = Vec::new();
+
+            while let Some(row) = rows.next()? {
+                let message_id: i64 = row.get(0)?;
+                let uid: String = row.get(1)?;
+                let subject_enc: String = row.get(2)?;
+                let snippet_enc: Option<String> = row.get(3)?;
+                let date: Option<String> = row.get(4)?;
+                let sender_email: String = row.get(5)?;
+                let sender_display: Option<String> = row.get(6)?;
+
+                let analyzed_raw: Option<i64> = row.get(7)?;
+                let analyzed_at: Option<i64> = row.get(8)?;
+                let model_id: Option<String> = row.get(9)?;
+                let categories_json: Option<String> = row.get(10)?;
+                let metadata_json: Option<String> = row.get(11)?;
+
+                let subject = cipher.decrypt_string(&subject_enc)?;
+                let snippet = snippet_enc
+                    .as_ref()
+                    .map(|value| cipher.decrypt_string(value))
+                    .transpose()?;
+
+                let categories = categories_json
+                    .as_ref()
+                    .map(|value| {
+                        serde_json::from_str::<Vec<String>>(value)
+                            .map_err(|err| StorageError::Serialization(err.to_string()))
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
+
+                let metadata = metadata_json
+                    .as_ref()
+                    .map(|value| {
+                        serde_json::from_str::<Value>(value)
+                            .map_err(|err| StorageError::Serialization(err.to_string()))
+                    })
+                    .transpose()?;
+
+                let existing_analysis = ExistingAnalysisRecord {
+                    analyzed: analyzed_raw.unwrap_or_default() != 0,
+                    analyzed_at,
+                    model_id,
+                    categories,
+                    metadata,
+                };
+
+                messages.push(MessageForAnalysis {
+                    message_id,
+                    account_email: account.clone(),
+                    uid,
+                    subject,
+                    snippet,
+                    date,
+                    sender_email,
+                    sender_display,
+                    existing_analysis,
+                });
+            }
+
+            Ok(messages)
         })
         .await
         .map_err(map_join_error)?;
@@ -629,6 +832,73 @@ impl Storage {
         Ok(())
     }
 
+    pub async fn update_message_body(
+        &self,
+        account_email: &str,
+        uid: &str,
+        body: &[u8],
+    ) -> Result<()> {
+        let conn = self.conn.clone();
+        let cipher = self.cipher.clone();
+        let account = account_email.to_owned();
+        let uid = uid.to_owned();
+        let payload = body.to_vec();
+
+        let join_result = tokio::task::spawn_blocking(move || -> Result<()> {
+            let encrypted = cipher.encrypt_bytes(&payload)?;
+            let now = Utc::now().timestamp();
+            let conn = conn.lock();
+            conn.execute(
+                r#"
+                UPDATE messages
+                SET body_encrypted = ?, updated_at = ?
+                WHERE account_email = ? AND uid = ?
+                "#,
+                params![encrypted, now, account, uid],
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(map_join_error)?;
+
+        join_result?;
+
+        Ok(())
+    }
+
+    pub async fn message_body(&self, account_email: &str, uid: &str) -> Result<Option<Vec<u8>>> {
+        let conn = self.conn.clone();
+        let cipher = self.cipher.clone();
+        let account = account_email.to_owned();
+        let uid = uid.to_owned();
+
+        let join_result = tokio::task::spawn_blocking(move || -> Result<Option<Vec<u8>>> {
+            let conn = conn.lock();
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT body_encrypted
+                FROM messages
+                WHERE account_email = ? AND uid = ?
+                "#,
+            )?;
+
+            let encrypted: Option<String> = stmt
+                .query_row(params![account, uid], |row| row.get(0))
+                .optional()?;
+
+            if let Some(payload) = encrypted {
+                let body = cipher.decrypt_bytes(&payload)?;
+                Ok(Some(body))
+            } else {
+                Ok(None)
+            }
+        })
+        .await
+        .map_err(map_join_error)?;
+
+        join_result
+    }
+
     pub async fn update_sender_status(
         &self,
         sender_email: &str,
@@ -699,6 +969,55 @@ impl Storage {
         .map_err(map_join_error)?;
 
         result
+    }
+
+    pub async fn set_setting(&self, key: &str, value: Option<&str>) -> Result<()> {
+        let conn = self.conn.clone();
+        let key = key.to_owned();
+        let value = value.map(|v| v.to_owned());
+
+        let join_result = tokio::task::spawn_blocking(move || -> Result<()> {
+            let conn = conn.lock();
+            match value {
+                Some(val) => {
+                    conn.execute(
+                        r#"
+                        INSERT INTO app_settings (key, value)
+                        VALUES (?, ?)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                        "#,
+                        params![key, val],
+                    )?;
+                }
+                None => {
+                    conn.execute("DELETE FROM app_settings WHERE key = ?", params![key])?;
+                }
+            }
+            Ok(())
+        })
+        .await
+        .map_err(map_join_error)?;
+
+        join_result?;
+
+        Ok(())
+    }
+
+    pub async fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let conn = self.conn.clone();
+        let key = key.to_owned();
+
+        let join_result = tokio::task::spawn_blocking(move || -> Result<Option<String>> {
+            let conn = conn.lock();
+            let mut stmt = conn.prepare("SELECT value FROM app_settings WHERE key = ?")?;
+            let value: Option<String> =
+                stmt.query_row(params![key], |row| row.get(0)).optional()?;
+            Ok(value)
+        })
+        .await
+        .map_err(map_join_error)?;
+
+        join_result
     }
 
     pub async fn upsert_account(&self, account: &Account) -> Result<()> {
@@ -833,14 +1152,39 @@ impl Storage {
             {
                 let mut stmt = tx.prepare(
                     r#"
-                    INSERT INTO analysis_results (message_id, summary, sentiment, categories)
-                    SELECT id, ?, ?, ?
+                    INSERT INTO analysis_results (
+                        message_id,
+                        summary,
+                        sentiment,
+                        categories,
+                        metadata_json,
+                        model_id,
+                        analyzed,
+                        analyzed_at,
+                        analysis_confidence,
+                        validator_model_id,
+                        validation_status,
+                        validation_confidence,
+                        validation_notes,
+                        validated_at
+                    )
+                    SELECT id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                     FROM messages
                     WHERE account_email = ? AND uid = ?
                     ON CONFLICT(message_id) DO UPDATE SET
                         summary = excluded.summary,
                         sentiment = excluded.sentiment,
-                        categories = excluded.categories
+                        categories = excluded.categories,
+                        metadata_json = excluded.metadata_json,
+                        model_id = excluded.model_id,
+                        analyzed = excluded.analyzed,
+                        analyzed_at = excluded.analyzed_at,
+                        analysis_confidence = excluded.analysis_confidence,
+                        validator_model_id = excluded.validator_model_id,
+                        validation_status = excluded.validation_status,
+                        validation_confidence = excluded.validation_confidence,
+                        validation_notes = excluded.validation_notes,
+                        validated_at = excluded.validated_at
                     "#,
                 )?;
 
@@ -857,11 +1201,38 @@ impl Storage {
                     let summary = row.summary.as_deref();
                     let sentiment = row.sentiment.as_deref();
                     let categories = categories_json.as_deref();
+                    let metadata_json = if row.metadata_json.is_null() {
+                        None
+                    } else {
+                        Some(
+                            serde_json::to_string(&row.metadata_json)
+                                .map_err(|err| StorageError::Serialization(err.to_string()))?,
+                        )
+                    };
+                    let model_id = row.model_id.as_deref();
+                    let analyzed = if row.analyzed { 1 } else { 0 };
+                    let analyzed_at = row.analyzed_at;
+                    let analysis_confidence = row.analysis_confidence;
+                    let validator_model_id = row.validation.validator_model_id.as_deref();
+                    let validation_status = row.validation.status.as_deref();
+                    let validation_confidence = row.validation.confidence;
+                    let validation_notes = row.validation.notes.as_deref();
+                    let validated_at = row.validation.validated_at;
 
                     stmt.execute(params![
                         summary,
                         sentiment,
                         categories,
+                        metadata_json.as_deref(),
+                        model_id,
+                        analyzed,
+                        analyzed_at,
+                        analysis_confidence,
+                        validator_model_id,
+                        validation_status,
+                        validation_confidence,
+                        validation_notes,
+                        validated_at,
                         row.account_email,
                         row.uid
                     ])?;

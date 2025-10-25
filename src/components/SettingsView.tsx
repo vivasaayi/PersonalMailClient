@@ -2,12 +2,140 @@ import React from 'react';
 import { ButtonComponent } from '@syncfusion/ej2-react-buttons';
 import { SwitchComponent } from '@syncfusion/ej2-react-buttons';
 import { createElement } from 'react';
+import { useLlmSettings } from '../hooks/useLlmSettings';
 
 interface SettingsViewProps {
   // Add props as needed for settings functionality
 }
 
 const SettingsView: React.FC<SettingsViewProps> = () => {
+  const {
+    status,
+    isChecking,
+    isUpdatingPath,
+    isDownloading,
+    busy,
+    refreshStatus,
+    pickModelFile,
+    clearModelPath,
+    downloadDefaultModel
+  } = useLlmSettings();
+
+  const statusIndicatorColor = status?.loaded
+    ? '#16a34a'
+    : status?.configured_path
+    ? '#f97316'
+    : '#9ca3af';
+
+  const statusIndicatorText = isChecking
+    ? 'Checking status ...'
+    : status
+    ? status.loaded
+      ? 'Model loaded'
+      : status.configured_path
+      ? 'Configured, awaiting first use'
+      : 'Not configured'
+    : 'Status unavailable';
+
+  const modelPathLabel = status?.configured_path ?? 'Not configured';
+  const lastError = status?.last_error ?? null;
+  const chooseLabel = isUpdatingPath ? 'Updating ...' : 'Choose Model File';
+  const downloadLabel = isDownloading ? 'Downloading ...' : 'Download TinyLlama (~200 MB)';
+  const refreshLabel = isChecking ? 'Refreshing ...' : 'Refresh Status';
+  const canClear = Boolean(status?.configured_path);
+
+  const llmStatusChildren: React.ReactNode[] = [
+    createElement('div', {
+      key: 'status-row',
+      style: { display: 'flex', alignItems: 'center', gap: '12px' }
+    }, [
+      createElement('span', {
+        key: 'indicator',
+        style: {
+          width: '12px',
+          height: '12px',
+          borderRadius: '50%',
+          backgroundColor: statusIndicatorColor,
+          display: 'inline-block'
+        }
+      }),
+      createElement('div', {
+        key: 'status-label',
+        style: { fontWeight: 500 }
+      }, statusIndicatorText)
+    ]),
+    createElement('div', {
+      key: 'path-label',
+      style: { color: '#374151', fontSize: '0.9rem' }
+    }, `Model path: ${modelPathLabel}`)
+  ];
+
+  if (lastError) {
+    llmStatusChildren.push(
+      createElement('div', {
+        key: 'status-error',
+        style: { color: '#dc2626', fontSize: '0.85rem' }
+      }, `Last error: ${lastError}`)
+    );
+  }
+
+  const llmActionButtons: React.ReactNode[] = [
+    createElement(ButtonComponent, {
+      key: 'choose',
+      content: chooseLabel,
+      cssClass: 'outlined',
+      disabled: busy,
+      onClick: () => {
+        void pickModelFile();
+      }
+    }),
+    createElement(ButtonComponent, {
+      key: 'download',
+      content: downloadLabel,
+      cssClass: 'primary',
+      disabled: busy,
+      onClick: () => {
+        void downloadDefaultModel();
+      }
+    }),
+    createElement(ButtonComponent, {
+      key: 'clear',
+      content: 'Clear Model',
+      cssClass: 'outlined',
+      disabled: !canClear || busy,
+      onClick: () => {
+        if (!canClear) return;
+        if (window.confirm('Remove the configured model path?')) {
+          void clearModelPath();
+        }
+      }
+    }),
+    createElement(ButtonComponent, {
+      key: 'refresh',
+      content: refreshLabel,
+      cssClass: 'outlined',
+      disabled: isChecking,
+      onClick: () => {
+        void refreshStatus();
+      }
+    })
+  ];
+
+  const llmContentChildren: React.ReactNode[] = [
+    createElement('div', {
+      key: 'status',
+      style: { display: 'flex', flexDirection: 'column', gap: '8px' }
+    }, llmStatusChildren),
+    createElement('div', {
+      key: 'actions',
+      style: { display: 'flex', flexWrap: 'wrap', gap: '12px' }
+    }, llmActionButtons),
+    createElement('p', {
+      key: 'note',
+      style: { color: '#6b7280', fontSize: '0.8rem', margin: 0 }
+    }, 'Downloads save into the app data models folder. Large models may take a minute to finish.')
+  ];
+
   return createElement('div', {
     style: { padding: '24px', maxWidth: '1200px', margin: '0 auto' }
   }, [
@@ -267,6 +395,56 @@ const SettingsView: React.FC<SettingsViewProps> = () => {
             cssClass: 'outlined full-width'
           })
         ])
+      ]),
+
+      // LLM Configuration Card
+      createElement('div', {
+        key: 'llm-card',
+        style: {
+          border: '1px solid #e5e7eb',
+          borderRadius: '8px',
+          backgroundColor: '#ffffff'
+        }
+      }, [
+        createElement('div', {
+          key: 'llm-header',
+          style: {
+            padding: '16px',
+            borderBottom: '1px solid #e5e7eb',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '16px'
+          }
+        }, [
+          createElement('div', {
+            key: 'llm-avatar',
+            style: {
+              width: '40px',
+              height: '40px',
+              borderRadius: '50%',
+              backgroundColor: '#7c3aed',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#ffffff',
+              fontSize: '20px'
+            }
+          }, '🤖'),
+          createElement('div', { key: 'llm-text' }, [
+            createElement('h3', {
+              key: 'llm-title',
+              style: { margin: '0 0 4px 0', fontSize: '1.125rem', fontWeight: '500' }
+            }, 'Local AI Assistant'),
+            createElement('p', {
+              key: 'llm-subtitle',
+              style: { margin: 0, color: '#6b7280', fontSize: '0.875rem' }
+            }, 'Manage the on-device LLM used for message analysis')
+          ])
+        ]),
+        createElement('div', {
+          key: 'llm-content',
+          style: { padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px' }
+        }, llmContentChildren)
       ]),
 
       // Sync Configuration Card

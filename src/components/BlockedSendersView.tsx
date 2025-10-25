@@ -1,4 +1,5 @@
-import { useMemo, useCallback } from "react";
+import { useMemo, useCallback, useState } from "react";
+import { Container, Row as BootstrapRow, Col } from "react-bootstrap";
 import dayjs from "dayjs";
 import {
   GridComponent,
@@ -14,16 +15,8 @@ import {
 import type { SelectionSettingsModel } from "@syncfusion/ej2-react-grids";
 import { ButtonComponent } from "@syncfusion/ej2-react-buttons";
 import { EmailActionDropdown } from "./EmailActionDropdown";
+import { SenderMessagesModal } from "./SenderMessagesModal";
 import type { SenderGroup, SenderStatus } from "../types";
-
-interface BlockedSendersViewProps {
-  senderGroups: SenderGroup[];
-  accountEmail: string;
-  onStatusChange: (senderEmail: string, status: SenderStatus) => Promise<void>;
-  statusUpdating: string | null;
-  onRefresh: () => Promise<void>;
-  hasSenderData: boolean;
-}
 
 type SenderRow = {
   senderEmail: string;
@@ -34,6 +27,16 @@ type SenderRow = {
   latestFormatted: string;
   preview: string;
 };
+
+interface BlockedSendersViewProps {
+  senderGroups: SenderGroup[];
+  accountEmail: string;
+  onStatusChange: (senderEmail: string, status: SenderStatus) => Promise<void>;
+  statusUpdating: string | null;
+  onRefresh: () => Promise<void>;
+  onDeleteMessage: (senderEmail: string, uid: string) => Promise<void>;
+  hasSenderData: boolean;
+}
 
 const statusPalette: Record<SenderStatus, { label: string; bg: string; fg: string; border: string }> = {
   blocked: {
@@ -77,6 +80,7 @@ export default function BlockedSendersView({
   onStatusChange,
   statusUpdating,
   onRefresh,
+  onDeleteMessage,
   hasSenderData
 }: BlockedSendersViewProps) {
   const selectionSettings = useMemo<SelectionSettingsModel>(
@@ -93,6 +97,8 @@ export default function BlockedSendersView({
       { blocked: 0, allowed: 0, neutral: 0 } as Record<SenderStatus, number>
     );
   }, [senderGroups]);
+
+  const [activeSenderEmail, setActiveSenderEmail] = useState<string | null>(null);
 
   const gridData = useMemo<SenderRow[]>(() => {
     return senderGroups
@@ -121,41 +127,60 @@ export default function BlockedSendersView({
       });
   }, [senderGroups]);
 
-  const statusTemplate = useCallback((props: SenderRow) => {
-    const palette = statusPalette[props.status];
-    return (
-      <span
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: "8px",
-          padding: "4px 12px",
-          borderRadius: "999px",
-          fontSize: "12px",
-          fontWeight: 600,
-          backgroundColor: palette.bg,
-          color: palette.fg,
-          border: `1px solid ${palette.border}`
-        }}
-      >
-        {palette.label}
-      </span>
-    );
+  const activeSender = useMemo(() => {
+    if (!activeSenderEmail) {
+      return null;
+    }
+    return senderGroups.find((group) => group.sender_email === activeSenderEmail) ?? null;
+  }, [activeSenderEmail, senderGroups]);
+
+  const handleOpenSenderMessages = useCallback((senderEmail: string) => {
+    setActiveSenderEmail(senderEmail);
   }, []);
 
-  const actionTemplate = useCallback(
+  const handleCloseMessagesModal = useCallback(() => {
+    setActiveSenderEmail(null);
+  }, []);
+
+  const emailTemplate = useCallback(
     (props: SenderRow) => (
-      <EmailActionDropdown
-        email={props.senderEmail}
-        currentStatus={props.status}
-        size="small"
-        showLabel={false}
-        showIcon
-        isUpdating={statusUpdating === props.senderEmail}
-        onStatusChange={(nextStatus) => onStatusChange(props.senderEmail, nextStatus)}
-      />
+      <button
+        type="button"
+        className="sender-email-link"
+        onClick={() => handleOpenSenderMessages(props.senderEmail)}
+      >
+        {props.senderEmail}
+      </button>
     ),
-    [onStatusChange, statusUpdating]
+    [handleOpenSenderMessages]
+  );
+
+  const statusActionsTemplate = useCallback(
+    (props: SenderRow) => {
+      const palette = statusPalette[props.status];
+      return (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "12px",
+            width: "100%"
+          }}
+        >
+          <EmailActionDropdown
+            email={props.senderEmail}
+            currentStatus={props.status}
+            size="small"
+            showLabel
+            showIcon
+            isUpdating={statusUpdating === props.senderEmail}
+            onStatusChange={(nextStatus) => onStatusChange(props.senderEmail, nextStatus)}
+          />
+        </div>
+      );
+    },
+    []
   );
 
   if (!hasSenderData) {
@@ -198,85 +223,101 @@ export default function BlockedSendersView({
         overflow: "hidden"
       }}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "16px" }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: "20px", fontWeight: 600 }}>
-            Sender status for {accountEmail}
-          </h2>
-          <p style={{ margin: "4px 0 0 0", color: "#6b7280", fontSize: "14px" }}>
-            Review who is blocked, allowed, or neutral. Use the quick actions to adjust a sender and
-            changes will propagate across the app instantly.
-          </p>
-        </div>
-        <ButtonComponent
-          cssClass="ghost-button"
-          content="Refresh"
-          onClick={() => {
-            void onRefresh();
-          }}
-        />
-      </div>
-
-      <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
-        {(Object.keys(statusPalette) as SenderStatus[]).map((status) => {
-          const palette = statusPalette[status];
-          const total = counts[status] ?? 0;
-          return (
-            <div
-              key={status}
-              style={{
-                minWidth: "160px",
-                padding: "12px 16px",
-                borderRadius: "12px",
-                border: `1px solid ${palette.border}`,
-                backgroundColor: palette.bg,
-                color: palette.fg,
-                display: "flex",
-                flexDirection: "column",
-                gap: "4px"
-              }}
-            >
-              <span style={{ fontSize: "12px", textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                {palette.label}
-              </span>
-              <span style={{ fontSize: "24px", fontWeight: 700 }}>{total}</span>
+      <Container fluid className="p-0 d-flex flex-column gap-3" style={{ height: "100%" }}>
+        <BootstrapRow className="align-items-start justify-content-between g-3">
+          <Col xs={12} lg="auto">
+            <div>
+              <h2 style={{ margin: 0, fontSize: "20px", fontWeight: 600 }}>
+                Sender status for {accountEmail}
+              </h2>
+              <p style={{ margin: "4px 0 0 0", color: "#6b7280", fontSize: "14px" }}>
+                Review who is blocked, allowed, or neutral. Use the quick actions to adjust a sender and
+                changes will propagate across the app instantly.
+              </p>
             </div>
-          );
-        })}
-      </div>
-
-      <div style={{ flex: 1, minHeight: 0 }}>
-        <GridComponent
-          dataSource={gridData}
-          allowPaging
-          pageSettings={{ pageSize: 25, pageSizes: [25, 50, 100] }}
-          allowSorting
-          allowFiltering
-          allowResizing
-          height="100%"
-          width="100%"
-          rowHeight={64}
-          selectionSettings={selectionSettings}
-          cssClass="mail-grid"
-        >
-          <ColumnsDirective>
-            <ColumnDirective field="senderDisplay" headerText="Sender" width="240" />
-            <ColumnDirective field="senderEmail" headerText="Email" width="260" />
-            <ColumnDirective field="status" headerText="Status" width="150" template={statusTemplate} />
-            <ColumnDirective
-              field="messageCount"
-              headerText="Messages"
-              width="120"
-              textAlign="Center"
-              format="N0"
+          </Col>
+          <Col xs="auto">
+            <ButtonComponent
+              cssClass="ghost-button"
+              content="Refresh"
+              onClick={() => {
+                void onRefresh();
+              }}
             />
-            <ColumnDirective field="latestFormatted" headerText="Latest message" width="200" />
-            <ColumnDirective field="preview" headerText="Recent insight" width="320" clipMode="EllipsisWithTooltip" />
-            <ColumnDirective field="actions" headerText="Quick actions" width="150" template={actionTemplate} />
-          </ColumnsDirective>
-          <Inject services={[Page, Sort, Filter, Resize, Selection]} />
-        </GridComponent>
-      </div>
+          </Col>
+        </BootstrapRow>
+
+        <BootstrapRow className="g-3">
+          {(Object.keys(statusPalette) as SenderStatus[]).map((status) => {
+            const palette = statusPalette[status];
+            const total = counts[status] ?? 0;
+            return (
+              <Col xs={12} sm={6} md={4} lg={3} key={status}>
+                <div
+                  style={{
+                    minWidth: "160px",
+                    padding: "12px 16px",
+                    borderRadius: "12px",
+                    border: `1px solid ${palette.border}`,
+                    backgroundColor: palette.bg,
+                    color: palette.fg,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "4px"
+                  }}
+                >
+                  <span style={{ fontSize: "12px", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                    {palette.label}
+                  </span>
+                  <span style={{ fontSize: "24px", fontWeight: 700 }}>{total}</span>
+                </div>
+              </Col>
+            );
+          })}
+        </BootstrapRow>
+
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <div className="mail-grid-wrapper" style={{ height: "100%" }}>
+            <GridComponent
+              dataSource={gridData}
+              allowPaging
+              pageSettings={{ pageSize: 25, pageSizes: [25, 50, 100] }}
+              allowSorting
+              allowFiltering
+              allowResizing
+              height="100%"
+              width="100%"
+              rowHeight={64}
+              selectionSettings={selectionSettings}
+              cssClass="mail-grid"
+            >
+              <ColumnsDirective>
+                <ColumnDirective field="senderDisplay" headerText="Sender" width="240" />
+                <ColumnDirective field="senderEmail" headerText="Email" width="260" template={emailTemplate} />
+                <ColumnDirective
+                  field="messageCount"
+                  headerText="Messages"
+                  width="120"
+                  textAlign="Center"
+                  format="N0"
+                />
+                <ColumnDirective field="latestFormatted" headerText="Latest message" width="200" />
+                <ColumnDirective field="status" headerText="Status" width="220" template={statusActionsTemplate} />
+              </ColumnsDirective>
+              <Inject services={[Page, Sort, Filter, Resize, Selection]} />
+            </GridComponent>
+          </div>
+        </div>
+      </Container>
+
+      <SenderMessagesModal
+        sender={activeSender}
+        open={Boolean(activeSender)}
+        onClose={handleCloseMessagesModal}
+        onDeleteMessage={onDeleteMessage}
+        onRefresh={onRefresh}
+      />
     </div>
   );
 }
+
