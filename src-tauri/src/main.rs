@@ -2226,6 +2226,48 @@ async fn analyze_with_llm(
     state.llm.analyze_prompt(prompt, max_tokens).await
 }
 
+#[tauri::command]
+async fn start_bulk_analysis(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    allowed_tags: Vec<String>,
+    max_tokens: Option<usize>,
+    snippet_limit: Option<usize>,
+    force: Option<bool>,
+    model_id: Option<String>,
+    validator_model_id: Option<String>,
+) -> Result<String, String> {
+    let run_id = Uuid::new_v4().to_string();
+    let run_id_clone = run_id.clone();
+    let max_tokens = max_tokens.unwrap_or(512);
+    let snippet_limit = snippet_limit.unwrap_or(2048);
+    let force = force.unwrap_or(false);
+
+    let storage = state.storage.clone();
+    let llm = state.llm.clone();
+
+    tauri::async_runtime::spawn(async move {
+        if let Err(err) = execute_bulk_analysis(
+            app,
+            storage,
+            llm,
+            run_id_clone,
+            allowed_tags,
+            max_tokens,
+            snippet_limit,
+            force,
+            model_id,
+            validator_model_id,
+        )
+        .await
+        {
+            error!(?err, "bulk analysis failed");
+        }
+    });
+
+    Ok(run_id)
+}
+
 fn main() {
     init_tracing();
 
@@ -2293,7 +2335,8 @@ fn main() {
             set_llm_model_path,
             download_llm_model,
             download_default_llm_model,
-            analyze_with_llm
+            analyze_with_llm,
+            start_bulk_analysis
         ])
         .run(tauri::generate_context!())
         .expect("error while running personal mail client application");

@@ -1,4 +1,4 @@
-import { createElement } from "react";
+import { createElement, useCallback, useEffect, useMemo, useState } from "react";
 import { ButtonComponent } from "@syncfusion/ej2-react-buttons";
 import { useAppState } from "./hooks/useAppState";
 import NavigationDrawer from "./components/NavigationDrawer";
@@ -12,15 +12,37 @@ import NotificationsHost from "./components/NotificationsHost";
 import BlockedSendersView from "./components/BlockedSendersView";
 import BlockedDomainsView from "./components/BlockedDomainsView";
 import LlmAssistantView from "./components/LlmAssistantView";
+import BulkAnalysisPanel from "./components/BulkAnalysisPanel";
+import { useBulkAnalysis } from "./stores/bulkAnalysisStore";
+import type { SenderGroup } from "./types";
+
+const SYNCFUSION_BANNER_OFFSET = 72;
 
 export default function App() {
   const appState = useAppState();
+  const {
+    availableTags,
+    currentRun,
+    isPanelOpen,
+    isStarting,
+    lastError,
+    lastRunTags,
+    startAnalysis,
+    setPanelOpen,
+    togglePanel,
+    activeTagFilter,
+    toggleTagFilter,
+    clearTagFilter,
+    addKnownTags
+  } = useBulkAnalysis();
 
   const periodicMinutes = appState.selectedAccount
     ? appState.periodicMinutesByAccount[appState.selectedAccount] ?? 0
     : 0;
 
   const assistantActive = appState.currentView === "assistant";
+  const deleteMessage = appState.handleDeleteMessage;
+  const [isDeletingFiltered, setIsDeletingFiltered] = useState(false);
 
   const handleAssistantButtonClick = () => {
     if (assistantActive) {
@@ -35,7 +57,112 @@ export default function App() {
     appState.handleNavigate("assistant");
   };
 
-  return createElement("div", { style: { display: "flex", height: "100vh" } }, [
+  useEffect(() => {
+    const collected = new Set<string>();
+    appState.currentSenderGroups.forEach((group) => {
+      group.messages.forEach((message) => {
+        message.analysis_categories.forEach((tag) => {
+          const trimmed = tag.trim();
+          if (trimmed) {
+            collected.add(trimmed);
+          }
+        });
+      });
+    });
+    if (collected.size > 0) {
+      addKnownTags(Array.from(collected));
+    }
+  }, [addKnownTags, appState.currentSenderGroups]);
+
+  const mailboxData = useMemo<{
+    senderGroups: SenderGroup[];
+    emails: typeof appState.currentEmails;
+    messageRefs: Array<{ senderEmail: string; uid: string }>;
+    messageCount: number;
+  }>(() => {
+    const normalizedFilter = activeTagFilter
+      .map((tag) => tag.trim().toLowerCase())
+      .filter((tag) => tag.length > 0);
+
+    if (normalizedFilter.length === 0) {
+      return {
+        senderGroups: appState.currentSenderGroups,
+        emails: appState.currentEmails,
+        messageRefs: [] as Array<{ senderEmail: string; uid: string }>,
+        messageCount: 0
+      };
+    }
+
+    const filterSet = new Set(normalizedFilter);
+    const filteredGroups: SenderGroup[] = [];
+    const messageRefs: Array<{ senderEmail: string; uid: string }> = [];
+    const includedUids = new Set<string>();
+
+    appState.currentSenderGroups.forEach((group) => {
+      const matchingMessages = group.messages.filter((message) =>
+        message.analysis_categories.some((category) => filterSet.has(category.trim().toLowerCase()))
+      );
+
+      if (matchingMessages.length === 0) {
+        return;
+      }
+
+      filteredGroups.push({
+        ...group,
+        message_count: matchingMessages.length,
+        messages: matchingMessages
+      });
+
+      matchingMessages.forEach((message) => {
+        if (!includedUids.has(message.uid)) {
+          includedUids.add(message.uid);
+          messageRefs.push({ senderEmail: group.sender_email, uid: message.uid });
+        }
+      });
+    });
+
+    const filteredEmails = appState.currentEmails.filter((email) => includedUids.has(email.uid));
+
+    return {
+      senderGroups: filteredGroups,
+      emails: filteredEmails,
+      messageRefs,
+      messageCount: messageRefs.length
+    };
+  }, [activeTagFilter, appState.currentEmails, appState.currentSenderGroups]);
+
+  const handleDeleteFiltered = useCallback(async () => {
+    if (mailboxData.messageRefs.length === 0) {
+      return;
+    }
+
+    setIsDeletingFiltered(true);
+    try {
+      for (const item of mailboxData.messageRefs) {
+        await deleteMessage(item.senderEmail, item.uid);
+      }
+    } finally {
+      setIsDeletingFiltered(false);
+    }
+  }, [deleteMessage, mailboxData.messageRefs]);
+
+  const handleStartAnalysis = useCallback(
+    async (options: { tags: string[]; maxTokens?: number; snippetLimit?: number; force?: boolean }) => {
+      await startAnalysis(options);
+    },
+    [startAnalysis]
+  );
+
+  return createElement(
+    "div",
+    {
+      style: {
+        display: "flex",
+        height: `calc(100vh - ${SYNCFUSION_BANNER_OFFSET}px)`,
+        marginTop: `${SYNCFUSION_BANNER_OFFSET}px`
+      }
+    },
+    [
     // Navigation Drawer
     createElement(NavigationDrawer, {
       key: "nav-drawer",
@@ -99,6 +226,18 @@ export default function App() {
               "Personal Mail Client"
             ),
             createElement(ButtonComponent, {
+              key: "bulk-analysis-toggle",
+              cssClass: isPanelOpen ? "primary" : "outlined",
+              content: "Bulk AI",
+              disabled: appState.accounts.length === 0,
+              onClick: () => {
+                if (appState.accounts.length === 0) {
+                  return;
+                }
+                togglePanel();
+              }
+            }),
+            createElement(ButtonComponent, {
               key: "assistant-toggle",
               cssClass: assistantActive ? "primary" : "outlined",
               content: assistantActive ? "Close Assistant" : "AI Assistant",
@@ -121,7 +260,14 @@ export default function App() {
             },
             ref: appState.emailListRef
           },
-          [renderViewContent(appState, periodicMinutes)]
+          [
+            renderViewContent(appState, periodicMinutes, mailboxData, {
+              activeTagFilter,
+              onClearTagFilter: clearTagFilter,
+              onOpenBulkPanel: () => setPanelOpen(true),
+              filteredMessageCount: mailboxData.messageCount
+            })
+          ]
         )
       ]
     ),
@@ -153,11 +299,42 @@ export default function App() {
       onOpenConnectionWizard: appState.handleOpenConnectionWizard
     }),
 
-    createElement(NotificationsHost, { key: "notifications-host" })
+    createElement(NotificationsHost, { key: "notifications-host" }),
+    createElement(BulkAnalysisPanel, {
+      key: "bulk-analysis-panel",
+      isOpen: isPanelOpen,
+      onClose: () => setPanelOpen(false),
+      availableTags,
+      currentRun,
+      isStarting,
+      lastError,
+      lastRunTags,
+      onStart: handleStartAnalysis,
+      activeTagFilter,
+      onToggleTagFilter: toggleTagFilter,
+      onClearFilter: clearTagFilter,
+      filteredMessageCount: mailboxData.messageCount,
+      onDeleteFiltered: handleDeleteFiltered,
+      isDeletingFiltered
+    })
   ]);
 }
 
-function renderViewContent(appState: ReturnType<typeof useAppState>, periodicMinutes: number) {
+function renderViewContent(
+  appState: ReturnType<typeof useAppState>,
+  periodicMinutes: number,
+  mailboxData: {
+    emails: typeof appState.currentEmails;
+    senderGroups: typeof appState.currentSenderGroups;
+    messageCount: number;
+  },
+  bulkUi: {
+    activeTagFilter: string[];
+    onClearTagFilter: () => void;
+    onOpenBulkPanel: () => void;
+    filteredMessageCount: number;
+  }
+) {
   const { currentView, selectedAccount } = appState;
 
   if ((currentView === "webmail" || currentView === "pivot") && selectedAccount) {
@@ -166,8 +343,8 @@ function renderViewContent(appState: ReturnType<typeof useAppState>, periodicMin
       viewType: currentView as "webmail" | "pivot",
       selectedAccount: selectedAccount,
       accounts: appState.accounts,
-      emails: appState.currentEmails,
-      senderGroups: appState.currentSenderGroups,
+      emails: mailboxData.emails,
+      senderGroups: mailboxData.senderGroups,
       totalCachedCount: appState.totalCachedCount,
       syncReport: appState.syncReport,
       syncProgress: appState.syncProgress,
@@ -183,7 +360,11 @@ function renderViewContent(appState: ReturnType<typeof useAppState>, periodicMin
       pendingDeleteUid: appState.pendingDeleteUid,
       hasMoreEmails: appState.hasMoreEmails,
       onLoadMoreEmails: appState.handleLoadMoreEmails,
-      isLoadingMoreEmails: appState.isLoadingMoreEmails
+      isLoadingMoreEmails: appState.isLoadingMoreEmails,
+      activeTagFilter: bulkUi.activeTagFilter,
+      onClearTagFilter: bulkUi.onClearTagFilter,
+      onOpenBulkPanel: bulkUi.onOpenBulkPanel,
+      filteredMessageCount: bulkUi.filteredMessageCount
     });
   }
 

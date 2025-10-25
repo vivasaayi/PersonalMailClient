@@ -6,6 +6,7 @@ import { AppThemeProvider } from "./theme";
 import { AccountsProvider } from "./stores/accountsStore";
 import { NotificationsProvider } from "./stores/notifications";
 import { StatusDialogProvider } from "./stores/statusDialog";
+import { BulkAnalysisProvider } from "./stores/bulkAnalysisStore";
 import "@syncfusion/ej2-base/styles/material.css";
 import "@syncfusion/ej2-buttons/styles/material.css";
 import "@syncfusion/ej2-inputs/styles/material.css";
@@ -30,7 +31,9 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       <NotificationsProvider>
         <AccountsProvider>
           <StatusDialogProvider>
-            <App />
+            <BulkAnalysisProvider>
+              <App />
+            </BulkAnalysisProvider>
           </StatusDialogProvider>
         </AccountsProvider>
       </NotificationsProvider>

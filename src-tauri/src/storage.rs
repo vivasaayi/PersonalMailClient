@@ -224,6 +224,33 @@ fn map_join_error(err: tokio::task::JoinError) -> StorageError {
     ))
 }
 
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let sql = format!("PRAGMA table_info({table})");
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name.eq_ignore_ascii_case(column) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    declaration: &str,
+) -> Result<()> {
+    if column_exists(conn, table, column)? {
+        return Ok(());
+    }
+    let sql = format!("ALTER TABLE {table} ADD COLUMN {declaration}");
+    conn.execute(sql.as_str(), ())?;
+    Ok(())
+}
+
 impl Storage {
     pub fn initialize(handle: &AppHandle) -> Result<Self> {
         let data_dir = handle.path_resolver().app_data_dir().ok_or_else(|| {
@@ -296,17 +323,6 @@ impl Storage {
                 FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
             );
 
-            ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS metadata_json TEXT;
-            ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS model_id TEXT;
-            ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS analyzed INTEGER NOT NULL DEFAULT 0;
-            ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS analyzed_at INTEGER;
-            ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS analysis_confidence REAL;
-            ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS validator_model_id TEXT;
-            ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS validation_status TEXT;
-            ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS validation_confidence REAL;
-            ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS validation_notes TEXT;
-            ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS validated_at INTEGER;
-
             CREATE TABLE IF NOT EXISTS account_sync_state (
                 account_email TEXT PRIMARY KEY,
                 last_full_sync INTEGER,
@@ -330,6 +346,30 @@ impl Storage {
             );
             "#,
         )?;
+
+        let analysis_columns = [
+            ("metadata_json", "metadata_json TEXT"),
+            ("model_id", "model_id TEXT"),
+            ("analyzed", "analyzed INTEGER NOT NULL DEFAULT 0"),
+            ("analyzed_at", "analyzed_at INTEGER"),
+            (
+                "analysis_confidence",
+                "analysis_confidence REAL",
+            ),
+            ("validator_model_id", "validator_model_id TEXT"),
+            ("validation_status", "validation_status TEXT"),
+            (
+                "validation_confidence",
+                "validation_confidence REAL",
+            ),
+            ("validation_notes", "validation_notes TEXT"),
+            ("validated_at", "validated_at INTEGER"),
+        ];
+
+        for (column, declaration) in analysis_columns {
+            add_column_if_missing(conn, "analysis_results", column, declaration)?;
+        }
+
         Ok(())
     }
 

@@ -49,6 +49,10 @@ interface MailboxProps {
   hasMoreEmails: boolean;
   onLoadMoreEmails: () => Promise<void> | void;
   isLoadingMoreEmails: boolean;
+  activeTagFilter: string[];
+  onClearTagFilter: () => void;
+  onOpenBulkPanel: () => void;
+  filteredMessageCount: number;
 }
 
 export default function Mailbox({
@@ -72,7 +76,11 @@ export default function Mailbox({
   pendingDeleteUid,
   hasMoreEmails,
   onLoadMoreEmails,
-  isLoadingMoreEmails
+  isLoadingMoreEmails,
+  activeTagFilter,
+  onClearTagFilter,
+  onOpenBulkPanel,
+  filteredMessageCount
 }: MailboxProps) {
 
   const messageInsights = useMemo<Record<string, EmailInsightRecord>>(() => {
@@ -109,6 +117,8 @@ export default function Mailbox({
   const handleFullSyncClick = () => {
     void onFullSync();
   };
+
+  const hasActiveFilter = activeTagFilter.length > 0;
   const quickActions = (
     <>
       <ButtonComponent
@@ -135,8 +145,77 @@ export default function Mailbox({
         actions={quickActions}
       />
 
+      {hasActiveFilter && (
+        <div
+          style={{
+            margin: "12px 24px",
+            padding: "12px 16px",
+            border: "1px solid #c7d2fe",
+            borderRadius: "8px",
+            backgroundColor: "#eef2ff",
+            display: "flex",
+            flexDirection: "column",
+            gap: "8px"
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: "0.9rem", fontWeight: 600, color: "#312e81" }}>
+              AI tag filter active
+            </span>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <ButtonComponent
+                cssClass="ghost-button"
+                content="Edit tags"
+                onClick={onOpenBulkPanel}
+              />
+              <ButtonComponent
+                cssClass="ghost-button"
+                content="Clear"
+                onClick={onClearTagFilter}
+              />
+            </div>
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+            {activeTagFilter.map((tag) => (
+              <span
+                key={tag}
+                style={{
+                  padding: "4px 10px",
+                  borderRadius: "999px",
+                  backgroundColor: "#c7d2fe",
+                  color: "#1e1b4b",
+                  fontSize: "0.75rem",
+                  fontWeight: 600
+                }}
+              >
+                {tag}
+              </span>
+            ))}
+          </div>
+          <div style={{ fontSize: "0.8rem", color: "#3730a3" }}>
+            {filteredMessageCount === 0
+              ? "No messages match the selected tags in the current cache."
+              : `Showing ${filteredMessageCount} message${filteredMessageCount === 1 ? "" : "s"} with these tags.`}
+          </div>
+        </div>
+      )}
+
       <main className="mailbox-body">
-        {viewType === "webmail" ? (
+        {hasActiveFilter && filteredMessageCount === 0 ? (
+          <div
+            style={{
+              flex: 1,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "#4f46e5",
+              fontSize: "0.95rem",
+              padding: "24px"
+            }}
+          >
+            Adjust the tag filter to see matching messages.
+          </div>
+        ) : viewType === "webmail" ? (
           <WebMailView
             emails={emails}
             messageInsights={messageInsights}

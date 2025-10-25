@@ -1,4 +1,4 @@
-import { createElement } from "react";
+import { createElement, useCallback, useEffect, useMemo, useState } from "react";
 import { ButtonComponent } from "@syncfusion/ej2-react-buttons";
 import { useAppState } from "./hooks/useAppState";
 import NavigationDrawer from "./components/NavigationDrawer";
@@ -12,12 +12,17 @@ import NotificationsHost from "./components/NotificationsHost";
 import BlockedSendersView from "./components/BlockedSendersView";
 import BlockedDomainsView from "./components/BlockedDomainsView";
 import LlmAssistantView from "./components/LlmAssistantView";
+import BulkAnalysisPanel from "./components/BulkAnalysisPanel";
+import { useBulkAnalysis } from "./stores/bulkAnalysisStore";
 export default function App() {
     const appState = useAppState();
+    const { availableTags, currentRun, isPanelOpen, isStarting, lastError, lastRunTags, startAnalysis, setPanelOpen, togglePanel, activeTagFilter, toggleTagFilter, clearTagFilter, addKnownTags } = useBulkAnalysis();
     const periodicMinutes = appState.selectedAccount
         ? appState.periodicMinutesByAccount[appState.selectedAccount] ?? 0
         : 0;
     const assistantActive = appState.currentView === "assistant";
+    const deleteMessage = appState.handleDeleteMessage;
+    const [isDeletingFiltered, setIsDeletingFiltered] = useState(false);
     const handleAssistantButtonClick = () => {
         if (assistantActive) {
             if (appState.selectedAccount) {
@@ -30,6 +35,80 @@ export default function App() {
         }
         appState.handleNavigate("assistant");
     };
+    useEffect(() => {
+        const collected = new Set();
+        appState.currentSenderGroups.forEach((group) => {
+            group.messages.forEach((message) => {
+                message.analysis_categories.forEach((tag) => {
+                    const trimmed = tag.trim();
+                    if (trimmed) {
+                        collected.add(trimmed);
+                    }
+                });
+            });
+        });
+        if (collected.size > 0) {
+            addKnownTags(Array.from(collected));
+        }
+    }, [addKnownTags, appState.currentSenderGroups]);
+    const mailboxData = useMemo(() => {
+        const normalizedFilter = activeTagFilter
+            .map((tag) => tag.trim().toLowerCase())
+            .filter((tag) => tag.length > 0);
+        if (normalizedFilter.length === 0) {
+            return {
+                senderGroups: appState.currentSenderGroups,
+                emails: appState.currentEmails,
+                messageRefs: [],
+                messageCount: 0
+            };
+        }
+        const filterSet = new Set(normalizedFilter);
+        const filteredGroups = [];
+        const messageRefs = [];
+        const includedUids = new Set();
+        appState.currentSenderGroups.forEach((group) => {
+            const matchingMessages = group.messages.filter((message) => message.analysis_categories.some((category) => filterSet.has(category.trim().toLowerCase())));
+            if (matchingMessages.length === 0) {
+                return;
+            }
+            filteredGroups.push({
+                ...group,
+                message_count: matchingMessages.length,
+                messages: matchingMessages
+            });
+            matchingMessages.forEach((message) => {
+                if (!includedUids.has(message.uid)) {
+                    includedUids.add(message.uid);
+                    messageRefs.push({ senderEmail: group.sender_email, uid: message.uid });
+                }
+            });
+        });
+        const filteredEmails = appState.currentEmails.filter((email) => includedUids.has(email.uid));
+        return {
+            senderGroups: filteredGroups,
+            emails: filteredEmails,
+            messageRefs,
+            messageCount: messageRefs.length
+        };
+    }, [activeTagFilter, appState.currentEmails, appState.currentSenderGroups]);
+    const handleDeleteFiltered = useCallback(async () => {
+        if (mailboxData.messageRefs.length === 0) {
+            return;
+        }
+        setIsDeletingFiltered(true);
+        try {
+            for (const item of mailboxData.messageRefs) {
+                await deleteMessage(item.senderEmail, item.uid);
+            }
+        }
+        finally {
+            setIsDeletingFiltered(false);
+        }
+    }, [deleteMessage, mailboxData.messageRefs]);
+    const handleStartAnalysis = useCallback(async (options) => {
+        await startAnalysis(options);
+    }, [startAnalysis]);
     return createElement("div", { style: { display: "flex", height: "100vh" } }, [
         // Navigation Drawer
         createElement(NavigationDrawer, {
@@ -83,6 +162,18 @@ export default function App() {
                     }
                 }, "Personal Mail Client"),
                 createElement(ButtonComponent, {
+                    key: "bulk-analysis-toggle",
+                    cssClass: isPanelOpen ? "primary" : "outlined",
+                    content: "Bulk AI",
+                    disabled: appState.accounts.length === 0,
+                    onClick: () => {
+                        if (appState.accounts.length === 0) {
+                            return;
+                        }
+                        togglePanel();
+                    }
+                }),
+                createElement(ButtonComponent, {
                     key: "assistant-toggle",
                     cssClass: assistantActive ? "primary" : "outlined",
                     content: assistantActive ? "Close Assistant" : "AI Assistant",
@@ -100,7 +191,14 @@ export default function App() {
                     padding: 0
                 },
                 ref: appState.emailListRef
-            }, [renderViewContent(appState, periodicMinutes)])
+            }, [
+                renderViewContent(appState, periodicMinutes, mailboxData, {
+                    activeTagFilter,
+                    onClearTagFilter: clearTagFilter,
+                    onOpenBulkPanel: () => setPanelOpen(true),
+                    filteredMessageCount: mailboxData.messageCount
+                })
+            ])
         ]),
         // Floating Action Button
         createElement(ButtonComponent, {
@@ -126,10 +224,27 @@ export default function App() {
             connectingSavedEmail: appState.connectingSavedEmail,
             onOpenConnectionWizard: appState.handleOpenConnectionWizard
         }),
-        createElement(NotificationsHost, { key: "notifications-host" })
+        createElement(NotificationsHost, { key: "notifications-host" }),
+        createElement(BulkAnalysisPanel, {
+            key: "bulk-analysis-panel",
+            isOpen: isPanelOpen,
+            onClose: () => setPanelOpen(false),
+            availableTags,
+            currentRun,
+            isStarting,
+            lastError,
+            lastRunTags,
+            onStart: handleStartAnalysis,
+            activeTagFilter,
+            onToggleTagFilter: toggleTagFilter,
+            onClearFilter: clearTagFilter,
+            filteredMessageCount: mailboxData.messageCount,
+            onDeleteFiltered: handleDeleteFiltered,
+            isDeletingFiltered
+        })
     ]);
 }
-function renderViewContent(appState, periodicMinutes) {
+function renderViewContent(appState, periodicMinutes, mailboxData, bulkUi) {
     const { currentView, selectedAccount } = appState;
     if ((currentView === "webmail" || currentView === "pivot") && selectedAccount) {
         return createElement(Mailbox, {
@@ -137,8 +252,8 @@ function renderViewContent(appState, periodicMinutes) {
             viewType: currentView,
             selectedAccount: selectedAccount,
             accounts: appState.accounts,
-            emails: appState.currentEmails,
-            senderGroups: appState.currentSenderGroups,
+            emails: mailboxData.emails,
+            senderGroups: mailboxData.senderGroups,
             totalCachedCount: appState.totalCachedCount,
             syncReport: appState.syncReport,
             syncProgress: appState.syncProgress,
@@ -154,7 +269,11 @@ function renderViewContent(appState, periodicMinutes) {
             pendingDeleteUid: appState.pendingDeleteUid,
             hasMoreEmails: appState.hasMoreEmails,
             onLoadMoreEmails: appState.handleLoadMoreEmails,
-            isLoadingMoreEmails: appState.isLoadingMoreEmails
+            isLoadingMoreEmails: appState.isLoadingMoreEmails,
+            activeTagFilter: bulkUi.activeTagFilter,
+            onClearTagFilter: bulkUi.onClearTagFilter,
+            onOpenBulkPanel: bulkUi.onOpenBulkPanel,
+            filteredMessageCount: bulkUi.filteredMessageCount
         });
     }
     if (currentView === "automation" && selectedAccount) {
