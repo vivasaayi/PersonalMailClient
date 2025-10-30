@@ -372,12 +372,12 @@ export function BulkAnalysisProvider({ children }: { children: ReactNode }) {
 
       try {
         const runId = await invoke<string>("start_bulk_analysis", {
-          allowed_tags: normalized,
-          max_tokens: maxTokens,
-          snippet_limit: snippetLimit,
+          allowedTags: normalized,
+          maxTokens: maxTokens,
+          snippetLimit: snippetLimit,
           force,
-          model_id: modelId ?? null,
-          validator_model_id: validatorModelId ?? null
+          modelId: modelId ?? null,
+          validatorModelId: validatorModelId ?? null
         });
 
         const timestamp = Date.now();

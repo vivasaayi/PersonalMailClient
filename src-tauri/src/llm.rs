@@ -1,9 +1,16 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use llama_cpp::{standard_sampler::StandardSampler, LlamaModel, LlamaParams, SessionParams};
+use llama_cpp::{
+    standard_sampler::StandardSampler,
+    LlamaModel,
+    LlamaParams,
+    LlamaSession,
+    SessionParams,
+};
 use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
+use tracing::warn;
 
 /// Default number of tokens to generate when replying to user prompts.
 const DEFAULT_COMPLETION_TOKENS: usize = 128;
@@ -30,6 +37,7 @@ struct LlmInner {
     model_path: RwLock<Option<PathBuf>>,
     model: Mutex<Option<LlamaModel>>,
     last_error: RwLock<Option<String>>,
+    session_pool: Mutex<Vec<LlamaSession>>, // reused sessions to avoid repeated Metal init
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -46,6 +54,7 @@ impl LlmService {
                 model_path: RwLock::new(None),
                 model: Mutex::new(None),
                 last_error: RwLock::new(None),
+                session_pool: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -69,6 +78,7 @@ impl LlmService {
     pub fn unload(&self) {
         *self.inner.model.lock() = None;
         *self.inner.last_error.write() = None;
+        self.inner.session_pool.lock().clear();
     }
 
     pub fn set_model_path(&self, path: Option<PathBuf>) -> Result<(), String> {
@@ -77,6 +87,7 @@ impl LlmService {
             *path_guard = path.clone();
         }
         *self.inner.model.lock() = None;
+        self.inner.session_pool.lock().clear();
 
         if let Some(ref model_path) = path {
             match self.load_model(model_path) {
@@ -109,10 +120,21 @@ impl LlmService {
     }
 
     fn analyze_prompt_sync(&self, prompt: &str, max_tokens: usize) -> Result<String, String> {
-        let model = self.ensure_model()?;
-        let mut session = model
-            .create_session(SessionParams::default())
-            .map_err(|err| format!("failed to create llama session: {err}"))?;
+        let mut session = self.checkout_session()?;
+        let result = self.run_completion(&mut session, prompt, max_tokens);
+        self.return_session(session);
+        result
+    }
+
+    fn run_completion(
+        &self,
+        session: &mut LlamaSession,
+        prompt: &str,
+        max_tokens: usize,
+    ) -> Result<String, String> {
+        session
+            .truncate_context(0)
+            .map_err(|err| format!("failed to clear llama session context: {err}"))?;
 
         let full_prompt = format!(
             "{system}\n\nUser: {prompt}\nAssistant:",
@@ -131,6 +153,33 @@ impl LlmService {
 
         let output = handle.into_string();
         Ok(output.trim().to_string())
+    }
+
+    fn checkout_session(&self) -> Result<LlamaSession, String> {
+        if let Some(mut session) = self.inner.session_pool.lock().pop() {
+            if let Err(err) = session.truncate_context(0) {
+                warn!(?err, "failed to clear cached llama session; recreating");
+            } else {
+                return Ok(session);
+            }
+        }
+
+        let model = self.ensure_model()?;
+        model
+            .create_session(SessionParams {
+                n_ctx: 4096,
+                n_batch: 2048,
+                ..Default::default()
+            })
+            .map_err(|err| format!("failed to create llama session: {err}"))
+    }
+
+    fn return_session(&self, mut session: LlamaSession) {
+        if let Err(err) = session.truncate_context(0) {
+            warn!(?err, "failed to clear llama session before caching; dropping session");
+            return;
+        }
+        self.inner.session_pool.lock().push(session);
     }
 
     fn ensure_model(&self) -> Result<LlamaModel, String> {

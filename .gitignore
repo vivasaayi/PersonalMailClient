@@ -18,3 +18,4 @@ src-tauri/tauri.conf.local.*
 # Environment variables (contains sensitive data like SyncFusion license keys)
 .env.local
 .env.*.local
+target

@@ -37,6 +37,7 @@ keyring = "2"
 llama_cpp = { version = "0.3.2", features = ["metal"] }
 mailparse = "0.13"
 futures-util = "0.3"
+regex = "1.10"
 uuid = { version = "1", features = ["v4"] }
 
 [features]

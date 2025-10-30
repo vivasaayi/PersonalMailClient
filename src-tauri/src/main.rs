@@ -21,6 +21,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::{Manager, State};
@@ -33,7 +34,7 @@ use uuid::Uuid;
 use warp::Filter;
 
 use chrono::Utc;
-use futures_util::StreamExt;
+use futures_util::{stream, StreamExt};
 use personal_mail_client::llm::{LlmService, LlmStatus};
 
 fn init_tracing() {
@@ -196,6 +197,7 @@ const BULK_RISK_VALUES: &[&str] = &["none", "sensitive", "financial", "PII", "se
 const BULK_SOURCE_VALUES: &[&str] = &["human", "automated system", "bot/no-reply"];
 const BULK_THREAD_ROLE_VALUES: &[&str] = &["new thread", "reply", "forward", "digest"];
 const BULK_LIFECYCLE_VALUES: &[&str] = &["new", "snoozed", "pending", "done", "archived"];
+const BULK_ANALYSIS_CONCURRENCY: usize = 3;
 const DEFAULT_BULK_COMPLETION_TOKENS: usize = 512;
 const DEFAULT_BULK_SNIPPET_CHARS: usize = 2048;
 
@@ -339,8 +341,16 @@ fn parse_bulk_json(raw: &str) -> Result<Value, String> {
         return Ok(parsed);
     }
     if let Some(slice) = extract_json_object(trimmed) {
-        return serde_json::from_str::<Value>(&slice)
-            .map_err(|err| format!("failed to parse JSON object from model: {err}"));
+        if let Ok(parsed) = serde_json::from_str::<Value>(&slice) {
+            return Ok(parsed);
+        }
+        // Try to repair the JSON
+        if let Some(repaired) = repair_json(&slice) {
+            if let Ok(parsed) = serde_json::from_str::<Value>(&repaired) {
+                return Ok(parsed);
+            }
+        }
+        return Err(format!("failed to parse JSON object from model: {}", serde_json::from_str::<Value>(&slice).unwrap_err()));
     }
     Err("model response did not contain valid JSON".to_string())
 }
@@ -369,6 +379,14 @@ fn extract_json_object(raw: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn repair_json(raw: &str) -> Option<String> {
+    // Simple repair: add quotes around unquoted keys
+    // This is a basic implementation, may not cover all cases
+    let re = regex::Regex::new(r#"(\w+)(?=\s*:)"#).ok()?;
+    let repaired = re.replace_all(raw, r#""$1""#);
+    Some(repaired.to_string())
 }
 
 fn normalize_bulk_output(raw: Value, allowed_tags: &[String]) -> Result<NormalizedBulkAnalysis, String> {
@@ -437,6 +455,224 @@ fn normalize_bulk_output(raw: Value, allowed_tags: &[String]) -> Result<Normaliz
         confidence,
         metadata,
     })
+}
+
+async fn process_bulk_message(
+    app: tauri::AppHandle,
+    storage: Storage,
+    llm: LlmService,
+    message: MessageForAnalysis,
+    allowed_tags: Arc<Vec<String>>,
+    run_id: String,
+    total: usize,
+    skipped_existing: usize,
+    max_tokens: usize,
+    snippet_limit: usize,
+    model_id: Option<String>,
+    validator_model_id: Option<String>,
+    completed: Arc<AtomicUsize>,
+    failed: Arc<AtomicUsize>,
+) {
+    let prompt = build_bulk_prompt(allowed_tags.as_slice(), &message, snippet_limit);
+    let account_email = message.account_email.clone();
+    let message_uid = message.uid.clone();
+
+    let response = match llm.analyze_prompt(prompt, Some(max_tokens)).await {
+        Ok(text) => text,
+        Err(err) => {
+            let failed_now = failed.fetch_add(1, Ordering::SeqCst) + 1;
+            let completed_now = completed.load(Ordering::SeqCst);
+            let pending = total.saturating_sub(completed_now + failed_now);
+            emit_bulk_event(
+                &app,
+                json!({
+                    "runId": run_id.clone(),
+                    "status": "error",
+                    "stage": "llm",
+                    "error": err,
+                    "accountEmail": account_email,
+                    "messageUid": message_uid,
+                    "total": total,
+                    "completed": completed_now,
+                    "failed": failed_now,
+                    "skipped": skipped_existing,
+                    "pending": pending,
+                    "timestamp": Utc::now().timestamp(),
+                    "modelId": model_id.clone(),
+                    "validatorModelId": validator_model_id.clone(),
+                }),
+            );
+            return;
+        }
+    };
+
+    let parsed = match parse_bulk_json(&response) {
+        Ok(value) => value,
+        Err(err) => {
+            let failed_now = failed.fetch_add(1, Ordering::SeqCst) + 1;
+            let completed_now = completed.load(Ordering::SeqCst);
+            let pending = total.saturating_sub(completed_now + failed_now);
+            emit_bulk_event(
+                &app,
+                json!({
+                    "runId": run_id.clone(),
+                    "status": "error",
+                    "stage": "parse",
+                    "error": err,
+                    "accountEmail": account_email,
+                    "messageUid": message_uid,
+                    "total": total,
+                    "completed": completed_now,
+                    "failed": failed_now,
+                    "skipped": skipped_existing,
+                    "pending": pending,
+                    "timestamp": Utc::now().timestamp(),
+                    "modelId": model_id.clone(),
+                    "validatorModelId": validator_model_id.clone(),
+                }),
+            );
+            return;
+        }
+    };
+
+    let normalized = match normalize_bulk_output(parsed, allowed_tags.as_slice()) {
+        Ok(value) => value,
+        Err(err) => {
+            let failed_now = failed.fetch_add(1, Ordering::SeqCst) + 1;
+            let completed_now = completed.load(Ordering::SeqCst);
+            let pending = total.saturating_sub(completed_now + failed_now);
+            emit_bulk_event(
+                &app,
+                json!({
+                    "runId": run_id.clone(),
+                    "status": "error",
+                    "stage": "normalize",
+                    "error": err,
+                    "accountEmail": account_email,
+                    "messageUid": message_uid,
+                    "total": total,
+                    "completed": completed_now,
+                    "failed": failed_now,
+                    "skipped": skipped_existing,
+                    "pending": pending,
+                    "timestamp": Utc::now().timestamp(),
+                    "modelId": model_id.clone(),
+                    "validatorModelId": validator_model_id.clone(),
+                }),
+            );
+            return;
+        }
+    };
+
+    let summary = normalized.summary.clone();
+    let sentiment = normalized.sentiment.clone();
+    let tags = normalized.tags.clone();
+    let confidence = normalized.confidence;
+
+    let mut metadata = normalized.metadata.clone();
+    if let Some(object) = metadata.as_object_mut() {
+        object.insert("run_id".to_string(), json!(run_id.clone()));
+        object.insert("account_email".to_string(), json!(account_email.clone()));
+        object.insert("uid".to_string(), json!(message_uid.clone()));
+        object.insert("tags".to_string(), json!(tags.clone()));
+        object.insert("summary".to_string(), json!(summary.clone()));
+        object.insert("sentiment".to_string(), json!(sentiment.clone()));
+        object.insert(
+            "previous_categories".to_string(),
+            json!(message.existing_analysis.categories.clone()),
+        );
+        if let Some(previous_metadata) = &message.existing_analysis.metadata {
+            object.insert("previous_metadata".to_string(), previous_metadata.clone());
+        }
+        if let Some(model) = &model_id {
+            object.insert("model_id".to_string(), json!(model));
+        }
+    }
+
+    let validation = if let Some(validator) = &validator_model_id {
+        AnalysisValidation {
+            validator_model_id: Some(validator.clone()),
+            status: Some("pending".to_string()),
+            confidence: None,
+            notes: None,
+            validated_at: None,
+        }
+    } else {
+        AnalysisValidation::default()
+    };
+
+    let analysis = AnalysisInsert {
+        account_email: message.account_email.clone(),
+        uid: message.uid.clone(),
+        summary: summary.clone(),
+        sentiment: sentiment.clone(),
+        categories: tags.clone(),
+        metadata_json: metadata.clone(),
+        model_id: model_id.clone(),
+        analyzed: true,
+        analyzed_at: Some(Utc::now().timestamp()),
+        analysis_confidence: confidence,
+        validation,
+    };
+
+    if let Err(err) = storage
+        .upsert_analysis(vec![analysis])
+        .await
+        .map_err(|err| err.to_string())
+    {
+        let failed_now = failed.fetch_add(1, Ordering::SeqCst) + 1;
+        let completed_now = completed.load(Ordering::SeqCst);
+        let pending = total.saturating_sub(completed_now + failed_now);
+        emit_bulk_event(
+            &app,
+            json!({
+                "runId": run_id.clone(),
+                "status": "error",
+                "stage": "storage",
+                "error": err,
+                "accountEmail": account_email,
+                "messageUid": message_uid,
+                "total": total,
+                "completed": completed_now,
+                "failed": failed_now,
+                "skipped": skipped_existing,
+                "pending": pending,
+                "timestamp": Utc::now().timestamp(),
+                "modelId": model_id.clone(),
+                "validatorModelId": validator_model_id.clone(),
+            }),
+        );
+        return;
+    }
+
+    let completed_now = completed.fetch_add(1, Ordering::SeqCst) + 1;
+    let failed_now = failed.load(Ordering::SeqCst);
+    let pending = total.saturating_sub(completed_now + failed_now);
+
+    emit_bulk_event(
+        &app,
+        json!({
+            "runId": run_id,
+            "status": "processed",
+            "accountEmail": account_email,
+            "messageUid": message_uid,
+            "total": total,
+            "completed": completed_now,
+            "failed": failed_now,
+            "skipped": skipped_existing,
+            "pending": pending,
+            "timestamp": Utc::now().timestamp(),
+            "modelId": model_id,
+            "validatorModelId": validator_model_id,
+            "result": {
+                "summary": summary,
+                "sentiment": sentiment,
+                "tags": tags,
+                "confidence": confidence,
+                "metadata": metadata,
+            }
+        }),
+    );
 }
 
 fn build_bulk_prompt(allowed_tags: &[String], message: &MessageForAnalysis, snippet_limit: usize) -> String {
@@ -616,207 +852,47 @@ async fn execute_bulk_analysis(
         return Ok(());
     }
 
-    let mut completed = 0usize;
-    let mut failed = 0usize;
+    let allowed_tags = Arc::new(allowed_tags);
+    let completed = Arc::new(AtomicUsize::new(0));
+    let failed = Arc::new(AtomicUsize::new(0));
 
-    for message in targets {
-        let prompt = build_bulk_prompt(&allowed_tags, &message, snippet_limit);
-        let account_email = message.account_email.clone();
-        let message_uid = message.uid.clone();
+    stream::iter(targets.into_iter().map(|message| {
+        let app = app.clone();
+        let storage = storage.clone();
+        let llm = llm.clone();
+        let allowed_tags = allowed_tags.clone();
+        let run_id = run_id.clone();
+        let model_id = model_id.clone();
+        let validator_model_id = validator_model_id.clone();
+        let completed = completed.clone();
+        let failed = failed.clone();
 
-        let response = match llm.analyze_prompt(prompt, Some(max_tokens)).await {
-            Ok(text) => text,
-            Err(err) => {
-                failed += 1;
-                let pending = total.saturating_sub(completed + failed);
-                emit_bulk_event(
-                    &app,
-                    json!({
-                        "runId": run_id.clone(),
-                        "status": "error",
-                        "stage": "llm",
-                        "error": err,
-                        "accountEmail": account_email,
-                        "messageUid": message_uid,
-                        "total": total,
-                        "completed": completed,
-                        "failed": failed,
-                        "skipped": skipped_existing,
-                        "pending": pending,
-                        "timestamp": Utc::now().timestamp(),
-                        "modelId": model_id.clone(),
-                        "validatorModelId": validator_model_id.clone(),
-                    }),
-                );
-                continue;
-            }
-        };
-
-        let parsed = match parse_bulk_json(&response) {
-            Ok(value) => value,
-            Err(err) => {
-                failed += 1;
-                let pending = total.saturating_sub(completed + failed);
-                emit_bulk_event(
-                    &app,
-                    json!({
-                        "runId": run_id.clone(),
-                        "status": "error",
-                        "stage": "parse",
-                        "error": err,
-                        "accountEmail": account_email,
-                        "messageUid": message_uid,
-                        "total": total,
-                        "completed": completed,
-                        "failed": failed,
-                        "skipped": skipped_existing,
-                        "pending": pending,
-                        "timestamp": Utc::now().timestamp(),
-                        "modelId": model_id.clone(),
-                        "validatorModelId": validator_model_id.clone(),
-                    }),
-                );
-                continue;
-            }
-        };
-
-        let normalized = match normalize_bulk_output(parsed, &allowed_tags) {
-            Ok(value) => value,
-            Err(err) => {
-                failed += 1;
-                let pending = total.saturating_sub(completed + failed);
-                emit_bulk_event(
-                    &app,
-                    json!({
-                        "runId": run_id.clone(),
-                        "status": "error",
-                        "stage": "normalize",
-                        "error": err,
-                        "accountEmail": account_email,
-                        "messageUid": message_uid,
-                        "total": total,
-                        "completed": completed,
-                        "failed": failed,
-                        "skipped": skipped_existing,
-                        "pending": pending,
-                        "timestamp": Utc::now().timestamp(),
-                        "modelId": model_id.clone(),
-                        "validatorModelId": validator_model_id.clone(),
-                    }),
-                );
-                continue;
-            }
-        };
-
-        let summary = normalized.summary.clone();
-        let sentiment = normalized.sentiment.clone();
-        let tags = normalized.tags.clone();
-        let confidence = normalized.confidence;
-
-        let mut metadata = normalized.metadata.clone();
-        if let Some(object) = metadata.as_object_mut() {
-            object.insert("run_id".to_string(), json!(run_id.clone()));
-            object.insert("account_email".to_string(), json!(account_email.clone()));
-            object.insert("uid".to_string(), json!(message_uid.clone()));
-            object.insert("tags".to_string(), json!(tags.clone()));
-            object.insert("summary".to_string(), json!(summary.clone()));
-            object.insert("sentiment".to_string(), json!(sentiment.clone()));
-            object.insert(
-                "previous_categories".to_string(),
-                json!(message.existing_analysis.categories.clone()),
-            );
-            if let Some(previous_metadata) = &message.existing_analysis.metadata {
-                object.insert("previous_metadata".to_string(), previous_metadata.clone());
-            }
-            if let Some(model) = &model_id {
-                object.insert("model_id".to_string(), json!(model));
-            }
+        async move {
+            process_bulk_message(
+                app,
+                storage,
+                llm,
+                message,
+                allowed_tags,
+                run_id,
+                total,
+                skipped_existing,
+                max_tokens,
+                snippet_limit,
+                model_id,
+                validator_model_id,
+                completed,
+                failed,
+            )
+            .await;
         }
+    }))
+    .buffer_unordered(BULK_ANALYSIS_CONCURRENCY)
+    .collect::<Vec<_>>()
+    .await;
 
-        let validation = if let Some(validator) = &validator_model_id {
-            AnalysisValidation {
-                validator_model_id: Some(validator.clone()),
-                status: Some("pending".to_string()),
-                confidence: None,
-                notes: None,
-                validated_at: None,
-            }
-        } else {
-            AnalysisValidation::default()
-        };
-
-        let analysis = AnalysisInsert {
-            account_email: message.account_email.clone(),
-            uid: message.uid.clone(),
-            summary: summary.clone(),
-            sentiment: sentiment.clone(),
-            categories: tags.clone(),
-            metadata_json: metadata.clone(),
-            model_id: model_id.clone(),
-            analyzed: true,
-            analyzed_at: Some(Utc::now().timestamp()),
-            analysis_confidence: confidence,
-            validation,
-        };
-
-        if let Err(err) = storage
-            .upsert_analysis(vec![analysis])
-            .await
-            .map_err(|err| err.to_string())
-        {
-            failed += 1;
-            let pending = total.saturating_sub(completed + failed);
-            emit_bulk_event(
-                &app,
-                json!({
-                    "runId": run_id.clone(),
-                    "status": "error",
-                    "stage": "storage",
-                    "error": err,
-                    "accountEmail": account_email,
-                    "messageUid": message_uid,
-                    "total": total,
-                    "completed": completed,
-                    "failed": failed,
-                    "skipped": skipped_existing,
-                    "pending": pending,
-                    "timestamp": Utc::now().timestamp(),
-                    "modelId": model_id.clone(),
-                    "validatorModelId": validator_model_id.clone(),
-                }),
-            );
-            continue;
-        }
-
-        completed += 1;
-        let pending = total.saturating_sub(completed + failed);
-
-        emit_bulk_event(
-            &app,
-            json!({
-                "runId": run_id.clone(),
-                "status": "processed",
-                "accountEmail": account_email,
-                "messageUid": message_uid,
-                "total": total,
-                "completed": completed,
-                "failed": failed,
-                "skipped": skipped_existing,
-                "pending": pending,
-                "timestamp": Utc::now().timestamp(),
-                "modelId": model_id.clone(),
-                "validatorModelId": validator_model_id.clone(),
-                "result": {
-                    "summary": summary,
-                    "sentiment": sentiment,
-                    "tags": tags,
-                    "confidence": confidence,
-                    "metadata": metadata,
-                }
-            }),
-        );
-    }
-
+    let completed = completed.load(Ordering::SeqCst);
+    let failed = failed.load(Ordering::SeqCst);
     let pending = total.saturating_sub(completed + failed);
     emit_bulk_event(
         &app,

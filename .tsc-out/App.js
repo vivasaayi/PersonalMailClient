@@ -14,6 +14,7 @@ import BlockedDomainsView from "./components/BlockedDomainsView";
 import LlmAssistantView from "./components/LlmAssistantView";
 import BulkAnalysisPanel from "./components/BulkAnalysisPanel";
 import { useBulkAnalysis } from "./stores/bulkAnalysisStore";
+const SYNCFUSION_BANNER_OFFSET = 72;
 export default function App() {
     const appState = useAppState();
     const { availableTags, currentRun, isPanelOpen, isStarting, lastError, lastRunTags, startAnalysis, setPanelOpen, togglePanel, activeTagFilter, toggleTagFilter, clearTagFilter, addKnownTags } = useBulkAnalysis();
@@ -109,7 +110,13 @@ export default function App() {
     const handleStartAnalysis = useCallback(async (options) => {
         await startAnalysis(options);
     }, [startAnalysis]);
-    return createElement("div", { style: { display: "flex", height: "100vh" } }, [
+    return createElement("div", {
+        style: {
+            display: "flex",
+            height: `calc(100vh - ${SYNCFUSION_BANNER_OFFSET}px)`,
+            marginTop: `${SYNCFUSION_BANNER_OFFSET}px`
+        }
+    }, [
         // Navigation Drawer
         createElement(NavigationDrawer, {
             key: "nav-drawer",
