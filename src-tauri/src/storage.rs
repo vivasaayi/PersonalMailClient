@@ -15,6 +15,7 @@ use once_cell::sync::OnceCell;
 use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
 use secrecy::{ExposeSecret, SecretVec};
+use serde::Serialize;
 use serde_json::{self, Value};
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
@@ -125,6 +126,22 @@ pub struct MessageRow {
     pub analysis_validation_notes: Option<String>,
     pub analysis_validated_at: Option<i64>,
     pub body_cached: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeletedMessageRow {
+    pub uid: String,
+    pub sender_email: String,
+    pub sender_display: Option<String>,
+    pub subject: String,
+    pub snippet: Option<String>,
+    pub date: Option<String>,
+    pub analysis_summary: Option<String>,
+    pub analysis_sentiment: Option<String>,
+    pub analysis_categories: Vec<String>,
+    pub deleted_at: i64,
+    pub remote_deleted_at: Option<i64>,
+    pub remote_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -299,6 +316,28 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_messages_account_sender
                 ON messages(account_email, sender_email);
 
+            CREATE TABLE IF NOT EXISTS deleted_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_email TEXT NOT NULL,
+                uid TEXT NOT NULL,
+                sender_email TEXT NOT NULL,
+                sender_display TEXT,
+                subject_encrypted TEXT,
+                date TEXT,
+                snippet_encrypted TEXT,
+                flags TEXT,
+                analysis_summary TEXT,
+                analysis_sentiment TEXT,
+                analysis_categories TEXT,
+                deleted_at INTEGER NOT NULL,
+                remote_deleted_at INTEGER,
+                remote_error TEXT,
+                UNIQUE(account_email, uid)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_deleted_messages_account
+                ON deleted_messages(account_email, deleted_at DESC);
+
             CREATE TABLE IF NOT EXISTS sender_status (
                 sender_email TEXT PRIMARY KEY,
                 status TEXT NOT NULL,
@@ -449,6 +488,525 @@ impl Storage {
         join_result?;
 
         Ok(())
+    }
+
+    pub async fn archive_message(
+            &self,
+            account_email: &str,
+            uid: &str,
+        ) -> Result<Option<DeletedMessageRow>> {
+            let conn = self.conn.clone();
+            let cipher = self.cipher.clone();
+            let account = account_email.to_owned();
+            let uid_value = uid.to_owned();
+
+            let join_result = tokio::task::spawn_blocking(move || -> Result<Option<DeletedMessageRow>> {
+                let now = Utc::now().timestamp();
+                let mut conn = conn.lock();
+                let tx = conn.transaction()?;
+
+                let source = {
+                    let mut stmt = tx.prepare(
+                        r#"
+                        SELECT 
+                            m.uid,
+                            m.sender_email,
+                            m.sender_display,
+                            m.subject_encrypted,
+                            m.snippet_encrypted,
+                            m.date,
+                            m.flags,
+                            ar.summary,
+                            ar.sentiment,
+                            ar.categories
+                        FROM messages m
+                        LEFT JOIN analysis_results ar ON ar.message_id = m.id
+                        WHERE m.account_email = ? AND m.uid = ?
+                        "#,
+                    )?;
+
+                    stmt
+                        .query_row(params![account, uid_value], |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, Option<String>>(2)?,
+                                row.get::<_, String>(3)?,
+                                row.get::<_, Option<String>>(4)?,
+                                row.get::<_, Option<String>>(5)?,
+                                row.get::<_, Option<String>>(6)?,
+                                row.get::<_, Option<String>>(7)?,
+                                row.get::<_, Option<String>>(8)?,
+                                row.get::<_, Option<String>>(9)?,
+                            ))
+                        })
+                        .optional()?
+                };
+
+                let Some((
+                    uid,
+                    sender_email,
+                    sender_display,
+                    subject_encrypted,
+                    snippet_encrypted,
+                    date,
+                    _flags,
+                    analysis_summary,
+                    analysis_sentiment,
+                    analysis_categories,
+                )) = source else {
+                    return Ok(None);
+                };
+
+                let categories_json = analysis_categories;
+
+                let account_key = account.clone();
+                let uid_insert = uid.clone();
+                let sender_email_insert = sender_email.clone();
+                let sender_display_insert = sender_display.clone();
+                let subject_insert = subject_encrypted.clone();
+                let date_insert = date.clone();
+                let snippet_insert = snippet_encrypted.clone();
+                let summary_insert = analysis_summary.clone();
+                let sentiment_insert = analysis_sentiment.clone();
+                let categories_insert = categories_json.clone();
+
+                tx.execute(
+                    r#"
+                    INSERT INTO deleted_messages (
+                        account_email,
+                        uid,
+                        sender_email,
+                        sender_display,
+                        subject_encrypted,
+                        date,
+                        snippet_encrypted,
+                        flags,
+                        analysis_summary,
+                        analysis_sentiment,
+                        analysis_categories,
+                        deleted_at,
+                        remote_deleted_at,
+                        remote_error
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, NULL)
+                    ON CONFLICT(account_email, uid) DO UPDATE SET
+                        sender_email = excluded.sender_email,
+                        sender_display = excluded.sender_display,
+                        subject_encrypted = excluded.subject_encrypted,
+                        date = excluded.date,
+                        snippet_encrypted = excluded.snippet_encrypted,
+                        flags = excluded.flags,
+                        analysis_summary = excluded.analysis_summary,
+                        analysis_sentiment = excluded.analysis_sentiment,
+                        analysis_categories = excluded.analysis_categories,
+                        deleted_at = excluded.deleted_at,
+                        remote_deleted_at = NULL,
+                        remote_error = NULL
+                    "#,
+                    params![
+                        account_key,
+                        uid_insert,
+                        sender_email_insert,
+                        sender_display_insert,
+                        subject_insert,
+                        date_insert,
+                        snippet_insert,
+                        summary_insert,
+                        sentiment_insert,
+                        categories_insert,
+                        now,
+                    ],
+                )?;
+
+                tx.execute(
+                    "DELETE FROM messages WHERE account_email = ? AND uid = ?",
+                    params![account, uid],
+                )?;
+
+                tx.commit()?;
+
+                let subject = cipher.decrypt_string(&subject_encrypted)?;
+                let snippet = snippet_encrypted
+                    .as_ref()
+                    .map(|value| cipher.decrypt_string(value))
+                    .transpose()?;
+                let categories: Vec<String> = categories_json
+                    .as_ref()
+                    .map(|value| {
+                        serde_json::from_str(value)
+                            .map_err(|err| StorageError::Serialization(err.to_string()))
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
+
+                Ok(Some(DeletedMessageRow {
+                    uid,
+                    sender_email,
+                    sender_display,
+                    subject,
+                    snippet,
+                    date,
+                    analysis_summary,
+                    analysis_sentiment,
+                    analysis_categories: categories,
+                    deleted_at: now,
+                    remote_deleted_at: None,
+                    remote_error: None,
+                }))
+            })
+            .await
+            .map_err(map_join_error)?;
+
+            join_result
+        }
+
+        pub async fn mark_deleted_remote(
+            &self,
+            account_email: &str,
+            uid: &str,
+            remote_deleted_at: Option<i64>,
+            remote_error: Option<String>,
+        ) -> Result<()> {
+            let conn = self.conn.clone();
+            let account = account_email.to_owned();
+            let message_uid = uid.to_owned();
+
+            let join_result = tokio::task::spawn_blocking(move || -> Result<()> {
+                let conn = conn.lock();
+                conn.execute(
+                    r#"
+                    UPDATE deleted_messages
+                    SET remote_deleted_at = ?, remote_error = ?
+                    WHERE account_email = ? AND uid = ?
+                    "#,
+                    params![
+                        remote_deleted_at,
+                        remote_error.as_deref(),
+                        account,
+                        message_uid,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(map_join_error)?;
+
+            join_result
+        }
+
+        pub async fn list_deleted_messages(
+            &self,
+            account_email: &str,
+            limit: Option<usize>,
+            offset: Option<usize>,
+        ) -> Result<Vec<DeletedMessageRow>> {
+            let conn = self.conn.clone();
+            let cipher = self.cipher.clone();
+            let account = account_email.to_owned();
+            let limit = limit.unwrap_or(500) as i64;
+            let offset = offset.unwrap_or(0) as i64;
+
+            let join_result = tokio::task::spawn_blocking(move || -> Result<Vec<DeletedMessageRow>> {
+                let conn = conn.lock();
+                let mut stmt = conn.prepare(
+                    r#"
+                    SELECT
+                        uid,
+                        sender_email,
+                        sender_display,
+                        subject_encrypted,
+                        date,
+                        snippet_encrypted,
+                        analysis_summary,
+                        analysis_sentiment,
+                        analysis_categories,
+                        deleted_at,
+                        remote_deleted_at,
+                        remote_error
+                    FROM deleted_messages
+                    WHERE account_email = ?
+                    ORDER BY deleted_at DESC
+                    LIMIT ? OFFSET ?
+                    "#,
+                )?;
+
+                let mut rows = stmt.query(params![account, limit, offset])?;
+                let mut results = Vec::new();
+
+                while let Some(row) = rows.next()? {
+                    let subject_encrypted: String = row.get(3)?;
+                    let snippet_encrypted: Option<String> = row.get(5)?;
+                    let categories_json: Option<String> = row.get(8)?;
+
+                    let subject = cipher.decrypt_string(&subject_encrypted)?;
+                    let snippet = snippet_encrypted
+                        .as_ref()
+                        .map(|value| cipher.decrypt_string(value))
+                        .transpose()?;
+                    let categories: Vec<String> = categories_json
+                        .as_ref()
+                        .map(|value| {
+                            serde_json::from_str(value)
+                                .map_err(|err| StorageError::Serialization(err.to_string()))
+                        })
+                        .transpose()?
+                        .unwrap_or_default();
+
+                    results.push(DeletedMessageRow {
+                        uid: row.get(0)?,
+                        sender_email: row.get(1)?,
+                        sender_display: row.get(2)?,
+                        subject,
+                        snippet,
+                        date: row.get(4)?,
+                        analysis_summary: row.get(6)?,
+                        analysis_sentiment: row.get(7)?,
+                        analysis_categories: categories,
+                        deleted_at: row.get(9)?,
+                        remote_deleted_at: row.get(10)?,
+                        remote_error: row.get(11)?,
+                    });
+                }
+
+                Ok(results)
+            })
+            .await
+            .map_err(map_join_error)?;
+
+            join_result
+    }
+
+    pub async fn restore_deleted_message(
+        &self,
+        account_email: &str,
+        uid: &str,
+    ) -> Result<Option<DeletedMessageRow>> {
+        let conn = self.conn.clone();
+        let cipher = self.cipher.clone();
+        let account = account_email.to_owned();
+        let uid_value = uid.to_owned();
+
+        let join_result = tokio::task::spawn_blocking(move || -> Result<Option<DeletedMessageRow>> {
+            let mut conn = conn.lock();
+            let tx = conn.transaction()?;
+
+            let source = {
+                let mut stmt = tx.prepare(
+                    r#"
+                    SELECT
+                        sender_email,
+                        sender_display,
+                        subject_encrypted,
+                        date,
+                        snippet_encrypted,
+                        flags,
+                        analysis_summary,
+                        analysis_sentiment,
+                        analysis_categories,
+                        deleted_at,
+                        remote_deleted_at,
+                        remote_error
+                    FROM deleted_messages
+                    WHERE account_email = ? AND uid = ?
+                    "#,
+                )?;
+
+                stmt
+                    .query_row(params![account, uid_value.clone()], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, Option<String>>(4)?,
+                            row.get::<_, Option<String>>(5)?,
+                            row.get::<_, Option<String>>(6)?,
+                            row.get::<_, Option<String>>(7)?,
+                            row.get::<_, Option<String>>(8)?,
+                            row.get::<_, i64>(9)?,
+                            row.get::<_, Option<i64>>(10)?,
+                            row.get::<_, Option<String>>(11)?,
+                        ))
+                    })
+                    .optional()?
+            };
+
+            let Some((
+                sender_email,
+                sender_display,
+                subject_encrypted,
+                date,
+                snippet_encrypted,
+                flags,
+                analysis_summary,
+                analysis_sentiment,
+                analysis_categories,
+                deleted_at,
+                remote_deleted_at,
+                remote_error,
+            )) = source else {
+                return Ok(None);
+            };
+
+            let now = Utc::now().timestamp();
+
+            tx.execute(
+                r#"
+                INSERT INTO messages (
+                    account_email,
+                    uid,
+                    sender_email,
+                    sender_display,
+                    subject_encrypted,
+                    date,
+                    snippet_encrypted,
+                    body_encrypted,
+                    flags,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(account_email, uid) DO UPDATE SET
+                    sender_email = excluded.sender_email,
+                    sender_display = excluded.sender_display,
+                    subject_encrypted = excluded.subject_encrypted,
+                    date = excluded.date,
+                    snippet_encrypted = excluded.snippet_encrypted,
+                    body_encrypted = excluded.body_encrypted,
+                    flags = excluded.flags,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    account.clone(),
+                    uid_value.clone(),
+                    sender_email.clone(),
+                    sender_display.clone(),
+                    subject_encrypted.clone(),
+                    date.clone(),
+                    snippet_encrypted.clone(),
+                    Option::<String>::None,
+                    flags.clone(),
+                    now,
+                    now,
+                ],
+            )?;
+
+            let message_id: i64 = tx.query_row(
+                "SELECT id FROM messages WHERE account_email = ? AND uid = ?",
+                params![account.clone(), uid_value.clone()],
+                |row| row.get(0),
+            )?;
+
+            let categories_text = analysis_categories.clone().unwrap_or_else(|| "[]".to_string());
+
+            tx.execute(
+                r#"
+                INSERT INTO analysis_results (
+                    message_id,
+                    summary,
+                    sentiment,
+                    categories,
+                    metadata_json,
+                    model_id,
+                    analyzed,
+                    analyzed_at,
+                    analysis_confidence,
+                    validator_model_id,
+                    validation_status,
+                    validation_confidence,
+                    validation_notes,
+                    validated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id) DO UPDATE SET
+                    summary = excluded.summary,
+                    sentiment = excluded.sentiment,
+                    categories = excluded.categories,
+                    metadata_json = excluded.metadata_json,
+                    model_id = excluded.model_id,
+                    analyzed = excluded.analyzed,
+                    analyzed_at = excluded.analyzed_at,
+                    analysis_confidence = excluded.analysis_confidence,
+                    validator_model_id = excluded.validator_model_id,
+                    validation_status = excluded.validation_status,
+                    validation_confidence = excluded.validation_confidence,
+                    validation_notes = excluded.validation_notes,
+                    validated_at = excluded.validated_at
+                "#,
+                params![
+                    message_id,
+                    analysis_summary.clone(),
+                    analysis_sentiment.clone(),
+                    categories_text.clone(),
+                    "{}",
+                    Option::<String>::None,
+                    0,
+                    Option::<i64>::None,
+                    Option::<f64>::None,
+                    Option::<String>::None,
+                    Option::<String>::None,
+                    Option::<f64>::None,
+                    Option::<String>::None,
+                    Option::<i64>::None,
+                ],
+            )?;
+
+            tx.execute(
+                "DELETE FROM deleted_messages WHERE account_email = ? AND uid = ?",
+                params![account.clone(), uid_value],
+            )?;
+
+            tx.commit()?;
+
+            let subject = cipher.decrypt_string(&subject_encrypted)?;
+            let snippet = snippet_encrypted
+                .as_ref()
+                .map(|value| cipher.decrypt_string(value))
+                .transpose()?;
+            let categories: Vec<String> = serde_json::from_str(&categories_text)
+                .map_err(|err| StorageError::Serialization(err.to_string()))
+                .unwrap_or_default();
+
+            Ok(Some(DeletedMessageRow {
+                uid: uid_value,
+                sender_email,
+                sender_display,
+                subject,
+                snippet,
+                date,
+                analysis_summary,
+                analysis_sentiment,
+                analysis_categories: categories,
+                deleted_at,
+                remote_deleted_at,
+                remote_error,
+            }))
+        })
+        .await
+        .map_err(map_join_error)?;
+
+        join_result
+    }
+
+    pub async fn purge_deleted_message(
+        &self,
+        account_email: &str,
+        uid: &str,
+    ) -> Result<bool> {
+        let conn = self.conn.clone();
+        let account = account_email.to_owned();
+        let uid_value = uid.to_owned();
+
+        let join_result = tokio::task::spawn_blocking(move || -> Result<bool> {
+            let conn = conn.lock();
+            let changes = conn.execute(
+                "DELETE FROM deleted_messages WHERE account_email = ? AND uid = ?",
+                params![account, uid_value],
+            )?;
+            Ok(changes > 0)
+        })
+        .await
+        .map_err(map_join_error)?;
+
+        join_result
     }
 
     pub async fn grouped_messages_for_account(

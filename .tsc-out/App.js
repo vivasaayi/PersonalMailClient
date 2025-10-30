@@ -13,6 +13,7 @@ import BlockedSendersView from "./components/BlockedSendersView";
 import BlockedDomainsView from "./components/BlockedDomainsView";
 import LlmAssistantView from "./components/LlmAssistantView";
 import BulkAnalysisPanel from "./components/BulkAnalysisPanel";
+import DeletedEmailsView from "./components/DeletedEmailsView";
 import { useBulkAnalysis } from "./stores/bulkAnalysisStore";
 const SYNCFUSION_BANNER_OFFSET = 72;
 export default function App() {
@@ -366,6 +367,16 @@ function renderViewContent(appState, periodicMinutes, mailboxData, bulkUi) {
             onRefresh: appState.handleRefreshEmails,
             onDeleteMessage: appState.handleDeleteMessage,
             hasSenderData: appState.currentSenderGroups.length > 0
+        });
+    }
+    if (currentView === "deleted" && selectedAccount) {
+        return createElement(DeletedEmailsView, {
+            key: "deleted-view",
+            accountEmail: selectedAccount,
+            emails: appState.currentDeletedEmails,
+            onRestore: appState.handleRestoreDeletedEmail,
+            onPurge: appState.handlePurgeDeletedEmail,
+            onRefresh: () => appState.loadDeletedEmails(selectedAccount).then(() => undefined)
         });
     }
     // Welcome view

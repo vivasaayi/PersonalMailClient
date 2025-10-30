@@ -20,6 +20,21 @@ export interface EmailSummary {
   date?: string | null;
 }
 
+export interface DeletedEmail {
+  uid: string;
+  subject: string;
+  sender_email: string;
+  sender_display?: string | null;
+  snippet?: string | null;
+  date?: string | null;
+  analysis_summary?: string | null;
+  analysis_sentiment?: string | null;
+  analysis_categories: string[];
+  deleted_at: number;
+  remote_deleted_at?: number | null;
+  remote_error?: string | null;
+}
+
 export type SenderStatus = "neutral" | "allowed" | "blocked";
 
 export interface AnalyzedMessage {

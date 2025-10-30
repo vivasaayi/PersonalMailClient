@@ -3,6 +3,7 @@ import { appWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/tauri";
 import type {
   Account,
+  DeletedEmail,
   SyncProgress,
   SyncReport,
   SenderStatus
@@ -16,9 +17,11 @@ interface UseSyncOperationsProps {
   loadCachedEmails: (accountEmail: string, limit?: number, scrollTop?: number) => Promise<{ cached: any[]; scrollTop?: number }>;
   loadSenderGroups: (accountEmail: string) => Promise<any[]>;
   loadCachedCount: (accountEmail: string) => Promise<number>;
+  loadDeletedEmails: (accountEmail: string, limit?: number) => Promise<DeletedEmail[]>;
   maxCachedItemsByAccount: React.MutableRefObject<Record<string, number>>;
   updateSenderStatus: (accountEmail: string, senderEmail: string, status: SenderStatus) => void;
   deleteMessageFromGroups: (accountEmail: string, senderEmail: string, uid: string) => void;
+  addDeletedEmail: (accountEmail: string, email: DeletedEmail) => void;
   setAccountStatus: (email: string, status: string) => void;
   setAccountLastSync: (email: string, timestamp: number) => void;
 }
@@ -30,9 +33,11 @@ export function useSyncOperations({
   loadCachedEmails,
   loadSenderGroups,
   loadCachedCount,
+  loadDeletedEmails,
   maxCachedItemsByAccount,
   updateSenderStatus,
   deleteMessageFromGroups,
+  addDeletedEmail,
   setAccountStatus,
   setAccountLastSync
 }: UseSyncOperationsProps) {
@@ -115,11 +120,12 @@ export function useSyncOperations({
 
         const existingCount = maxCachedItemsByAccount.current[account.email] ?? 0;
         const fetchLimit = Math.max(limit, existingCount, MIN_CACHE_FETCH);
-        
+
         await loadCachedEmails(account.email, fetchLimit);
         await loadSenderGroups(account.email);
         await loadCachedCount(account.email);
-        
+        await loadDeletedEmails(account.email);
+
         setAccountLastSync(account.email, Date.now());
         setAccountStatus(account.email, "idle");
       } catch (err) {
@@ -133,6 +139,7 @@ export function useSyncOperations({
       loadCachedEmails,
       loadSenderGroups,
       loadCachedCount,
+      loadDeletedEmails,
       maxCachedItemsByAccount,
       notifyError,
       notifyInfo,
@@ -200,6 +207,8 @@ export function useSyncOperations({
 
         await loadCachedEmails(account.email, fetchLimit);
         await loadSenderGroups(account.email);
+        await loadCachedCount(account.email);
+        await loadDeletedEmails(account.email);
         setAccountLastSync(account.email, Date.now());
         setAccountStatus(account.email, "idle");
       } catch (err) {
@@ -218,6 +227,8 @@ export function useSyncOperations({
       accounts,
       loadCachedEmails,
       loadSenderGroups,
+      loadCachedCount,
+      loadDeletedEmails,
       maxCachedItemsByAccount,
       notifyError,
       notifyInfo,
@@ -256,14 +267,20 @@ export function useSyncOperations({
       setPendingDeleteUid(key);
 
       try {
-        await invoke("delete_message_remote", {
+        const archived = await invoke<DeletedEmail>("delete_message", {
           provider: account.provider,
           email: account.email,
           uid
         });
 
         deleteMessageFromGroups(accountEmail, senderEmail, uid);
-        notifySuccess("Message deleted from the server and local cache.");
+        addDeletedEmail(accountEmail, archived);
+
+        if (archived?.remote_error) {
+          notifyError(`Message archived locally but failed to delete remotely: ${archived.remote_error}`);
+        } else {
+          notifySuccess("Message archived locally and deleted from the server.");
+        }
       } catch (err) {
         console.error(err);
         notifyError(errorMessage(err));
@@ -271,7 +288,7 @@ export function useSyncOperations({
         setPendingDeleteUid(null);
       }
     },
-    [accounts, deleteMessageFromGroups, notifyError, notifySuccess]
+    [accounts, addDeletedEmail, deleteMessageFromGroups, notifyError, notifySuccess]
   );
 
   const clearSyncData = useCallback((email: string) => {

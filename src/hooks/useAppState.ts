@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/tauri";
 import type {
   Account,
   ConnectAccountResponse,
   SavedAccount,
   Provider,
-  SenderStatus
+  SenderStatus,
+  DeletedEmail
 } from "../types";
 import { useAccountsStore } from "../stores/accountsStore";
 import { useNotifications } from "../stores/notifications";
@@ -52,9 +54,11 @@ export function useAppState() {
     loadCachedEmails: emailState.loadCachedEmails,
     loadSenderGroups: emailState.loadSenderGroups,
     loadCachedCount: emailState.loadCachedCount,
+    loadDeletedEmails: emailState.loadDeletedEmails,
     maxCachedItemsByAccount: emailState.maxCachedItemsByAccount,
     updateSenderStatus: emailState.updateSenderStatus,
     deleteMessageFromGroups: emailState.deleteMessageFromGroups,
+    addDeletedEmail: emailState.addDeletedEmail,
     setAccountStatus: (email: string, status: string) => setAccountStatus(email, status as any),
     setAccountLastSync
   });
@@ -72,6 +76,11 @@ export function useAppState() {
     if (!uiState.selectedAccount) return [];
     return emailState.senderGroupsByAccount[uiState.selectedAccount] ?? [];
   }, [uiState.selectedAccount, emailState.senderGroupsByAccount]);
+
+  const currentDeletedEmails = useMemo(() => {
+    if (!uiState.selectedAccount) return [];
+    return emailState.deletedEmailsByAccount[uiState.selectedAccount] ?? [];
+  }, [uiState.selectedAccount, emailState.deletedEmailsByAccount]);
 
   const selectedAccountEntity = useMemo(() => {
     if (!uiState.selectedAccount) return null;
@@ -268,6 +277,9 @@ export function useAppState() {
         
         await emailState.loadSenderGroups(uiState.selectedAccount!);
         if (cancelled) return;
+
+        await emailState.loadDeletedEmails(uiState.selectedAccount!);
+        if (cancelled) return;
         
         await syncOps.refreshEmailsForAccount(uiState.selectedAccount!, initialFetchLimit, false);
       } catch (err) {
@@ -313,6 +325,71 @@ export function useAppState() {
     }
   }, [uiState.selectedAccount, loadingMoreEmails, hasMoreEmails, totalCachedCount, currentEmails.length, emailState.loadCachedEmails]);
 
+  const handleRestoreDeletedEmail = useCallback(
+    async (uid: string) => {
+      if (!uiState.selectedAccount) return;
+      const accountEmail = uiState.selectedAccount;
+
+      try {
+        await invoke<DeletedEmail>("restore_deleted_message", {
+          email: accountEmail,
+          uid
+        });
+
+        await emailState.loadDeletedEmails(accountEmail);
+        await emailState.loadCachedEmails(accountEmail);
+        await emailState.loadSenderGroups(accountEmail);
+        await emailState.loadCachedCount(accountEmail);
+
+        notifySuccess("Message restored to local cache.");
+      } catch (err) {
+        console.error(err);
+        notifyError(errorMessage(err));
+      }
+    },
+    [
+      uiState.selectedAccount,
+      emailState.loadDeletedEmails,
+      emailState.loadCachedEmails,
+      emailState.loadSenderGroups,
+      emailState.loadCachedCount,
+      notifyError,
+      notifySuccess
+    ]
+  );
+
+  const handlePurgeDeletedEmail = useCallback(
+    async (uid: string) => {
+      if (!uiState.selectedAccount) return;
+      const accountEmail = uiState.selectedAccount;
+
+      try {
+        const removed = await invoke<boolean>("purge_deleted_message", {
+          email: accountEmail,
+          uid
+        });
+
+        await emailState.loadDeletedEmails(accountEmail);
+
+        if (removed) {
+          notifySuccess("Message removed from deleted archive.");
+        } else {
+          notifyInfo("Message already removed from archive.");
+        }
+      } catch (err) {
+        console.error(err);
+        notifyError(errorMessage(err));
+      }
+    },
+    [
+      uiState.selectedAccount,
+      emailState.loadDeletedEmails,
+      notifyError,
+      notifyInfo,
+      notifySuccess
+    ]
+  );
+
   return {
     // Account state
     accounts,
@@ -324,8 +401,10 @@ export function useAppState() {
     // Email state
     currentEmails,
     currentSenderGroups,
+    currentDeletedEmails,
     totalCachedCount,
     expandedSenders: emailState.expandedSenders,
+    deletedEmailsByAccount: emailState.deletedEmailsByAccount,
     
     // Sync state
     syncReport,
@@ -405,6 +484,11 @@ export function useAppState() {
           syncOps.refreshEmailsForAccount
         );
       }
-    }
+    },
+
+    loadDeletedEmails: emailState.loadDeletedEmails,
+    setDeletedEmailsByAccount: emailState.setDeletedEmailsByAccount,
+    handleRestoreDeletedEmail,
+    handlePurgeDeletedEmail
   };
 }

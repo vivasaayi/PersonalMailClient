@@ -42,6 +42,12 @@ export default function NavigationDrawer({
       disabled: !selectedAccount,
     },
     {
+      id: 'deleted',
+      label: 'Deleted',
+      icon: '🗑️',
+      disabled: !selectedAccount,
+    },
+    {
       id: 'pivot',
       label: 'Pivot View',
       icon: '�',

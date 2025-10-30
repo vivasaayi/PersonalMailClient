@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
 import dayjs from "dayjs";
 import { Modal, Button as BootstrapButton, Form } from "react-bootstrap";
@@ -35,6 +35,8 @@ export function SenderMessagesModal({
   const [llmAnalysis, setLlmAnalysis] = useState<string | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [isAnalyzingMessage, setIsAnalyzingMessage] = useState(false);
+  const [emailCopied, setEmailCopied] = useState(false);
+  const copyResetTimeout = useRef<number | null>(null);
 
   const messages = useMemo(() => sender?.messages ?? [], [sender]);
   const totalMessages = messages.length;
@@ -125,6 +127,49 @@ export function SenderMessagesModal({
     }
   }, [isBusy, onClose, onDeleteMessage, onRefresh, selectedMessageUids, sender]);
 
+  useEffect(() => {
+    return () => {
+      if (copyResetTimeout.current) {
+        window.clearTimeout(copyResetTimeout.current);
+        copyResetTimeout.current = null;
+      }
+    };
+  }, []);
+
+  const senderEmail = sender?.sender_email || "";
+  const senderDisplay = sender?.sender_display || senderEmail;
+
+  const handleCopyEmail = useCallback(async () => {
+    if (!senderEmail) {
+      return;
+    }
+
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(senderEmail);
+      } else {
+        const tempInput = document.createElement("input");
+        tempInput.value = senderEmail;
+        document.body.appendChild(tempInput);
+        tempInput.select();
+        document.execCommand("copy");
+        document.body.removeChild(tempInput);
+      }
+
+      setEmailCopied(true);
+      if (copyResetTimeout.current) {
+        window.clearTimeout(copyResetTimeout.current);
+      }
+      copyResetTimeout.current = window.setTimeout(() => {
+        setEmailCopied(false);
+        copyResetTimeout.current = null;
+      }, 2000);
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error("Failed to copy sender email", error);
+    }
+  }, [senderEmail]);
+
   const handlePeekMessage = useCallback(
     (uid: string) => {
       if (isBusy) {
@@ -212,7 +257,7 @@ Keep your response concise and format it clearly.`;
     }
   }, [previewMessage, sender]);
 
-  const title = sender ? `Messages from ${sender.sender_display || sender.sender_email}` : "Messages";
+  const title = sender ? `Messages from ${senderDisplay}` : "Messages";
 
   return (
     <Modal
@@ -233,7 +278,19 @@ Keep your response concise and format it clearly.`;
       }}
     >
       <Modal.Header closeButton={!isBusy} className="sender-messages-modal-header">
-        <Modal.Title>{title}</Modal.Title>
+        <Modal.Title>
+          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+            <span>{title}</span>
+            {senderEmail && (
+              <span style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.9rem" }}>
+                <code style={{ padding: "2px 6px", borderRadius: "4px", background: "#f3f4f6" }}>{senderEmail}</code>
+                <BootstrapButton size="sm" variant={emailCopied ? "success" : "outline-secondary"} onClick={handleCopyEmail}>
+                  {emailCopied ? "Copied" : "Copy"}
+                </BootstrapButton>
+              </span>
+            )}
+          </div>
+        </Modal.Title>
       </Modal.Header>
       <Modal.Body className="sender-messages-modal-body">
         {sender && totalMessages > 0 ? (

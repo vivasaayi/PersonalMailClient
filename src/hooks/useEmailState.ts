@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
-import type { EmailSummary, SenderGroup, SenderStatus } from "../types";
+import type { DeletedEmail, EmailSummary, SenderGroup, SenderStatus } from "../types";
 
 const MIN_CACHE_FETCH = 1_000;
 const MAX_CACHE_FETCH = 50_000;
@@ -9,6 +9,7 @@ export function useEmailState() {
   const [emailsByAccount, setEmailsByAccount] = useState<Record<string, EmailSummary[]>>({});
   const [cachedCountsByAccount, setCachedCountsByAccount] = useState<Record<string, number>>({});
   const [senderGroupsByAccount, setSenderGroupsByAccount] = useState<Record<string, SenderGroup[]>>({});
+  const [deletedEmailsByAccount, setDeletedEmailsByAccount] = useState<Record<string, DeletedEmail[]>>({});
   const [expandedSenders, setExpandedSenders] = useState<Record<string, string | null>>({});
   
   const maxCachedItemsByAccount = useRef<Record<string, number>>({});
@@ -124,6 +125,20 @@ export function useEmailState() {
     return groups;
   }, [expandedSenders]);
 
+  const loadDeletedEmails = useCallback(async (accountEmail: string, limit?: number) => {
+    const deleted = await invoke<DeletedEmail[]>("list_deleted_messages", {
+      email: accountEmail,
+      limit
+    });
+
+    setDeletedEmailsByAccount((prev) => ({
+      ...prev,
+      [accountEmail]: deleted
+    }));
+
+    return deleted;
+  }, []);
+
   const toggleSenderExpansion = useCallback((accountEmail: string, senderEmail: string) => {
     setExpandedSenders((prev) => {
       const current = prev[accountEmail] ?? null;
@@ -144,6 +159,10 @@ export function useEmailState() {
       return rest;
     });
     setCachedCountsByAccount((prev) => {
+      const { [email]: _removed, ...rest } = prev;
+      return rest;
+    });
+    setDeletedEmailsByAccount((prev) => {
       const { [email]: _removed, ...rest } = prev;
       return rest;
     });
@@ -205,19 +224,34 @@ export function useEmailState() {
     });
   }, []);
 
+  const addDeletedEmail = useCallback((accountEmail: string, email: DeletedEmail) => {
+    setDeletedEmailsByAccount((prev) => {
+      const existing = prev[accountEmail] ?? [];
+      const filtered = existing.filter((item) => item.uid !== email.uid);
+      return {
+        ...prev,
+        [accountEmail]: [email, ...filtered]
+      };
+    });
+  }, []);
+
   return {
     emailsByAccount,
     cachedCountsByAccount,
     senderGroupsByAccount,
+    deletedEmailsByAccount,
     expandedSenders,
     maxCachedItemsByAccount,
     loadCachedCount,
     loadCachedEmails,
     loadSenderGroups,
+    loadDeletedEmails,
     toggleSenderExpansion,
     clearAccountData,
     updateSenderStatus,
     deleteMessageFromGroups,
-    setEmailsByAccount
+    addDeletedEmail,
+    setEmailsByAccount,
+    setDeletedEmailsByAccount
   };
 }

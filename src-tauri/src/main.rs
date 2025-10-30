@@ -13,8 +13,8 @@ use personal_mail_client::models::{
 };
 use personal_mail_client::providers::{self, ProviderError};
 use personal_mail_client::storage::{
-    AccountRecord, AnalysisInsert, AnalysisValidation, ExistingAnalysisRecord, MessageForAnalysis,
-    MessageInsert, SenderStatus, Storage,
+    AnalysisInsert, AnalysisValidation, DeletedMessageRow, MessageForAnalysis, MessageInsert,
+    SenderStatus, Storage,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -1710,12 +1710,12 @@ async fn cached_message_count(state: State<'_, AppState>, email: String) -> Resu
 }
 
 #[tauri::command]
-async fn delete_message_remote(
+async fn delete_message(
     state: State<'_, AppState>,
     provider: Provider,
     email: String,
     uid: String,
-) -> Result<(), String> {
+) -> Result<DeletedMessageRow, String> {
     let normalized_email = email.trim().to_lowercase();
 
     let credentials = {
@@ -1730,20 +1730,81 @@ async fn delete_message_remote(
         return Err("Provider mismatch for stored credentials".into());
     }
 
-    providers::delete_message(&credentials, &uid)
+    let mut archived = state
+        .storage
+        .archive_message(&normalized_email, &uid)
         .await
-        .map_err(|err| {
-            error!(%normalized_email, %uid, ?err, "remote delete failed");
-            provider_error_to_message(err)
-        })?;
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "Message not found in local cache".to_string())?;
 
+    match providers::delete_message(&credentials, &uid).await {
+        Ok(_) => {
+            let now = Utc::now().timestamp();
+            state
+                .storage
+                .mark_deleted_remote(&normalized_email, &uid, Some(now), None)
+                .await
+                .map_err(|err| err.to_string())?;
+            archived.remote_deleted_at = Some(now);
+            archived.remote_error = None;
+        }
+        Err(err) => {
+            error!(%normalized_email, %uid, ?err, "remote delete failed");
+            let message = provider_error_to_message(err);
+            state
+                .storage
+                .mark_deleted_remote(&normalized_email, &uid, None, Some(message.clone()))
+                .await
+                .map_err(|err| err.to_string())?;
+            archived.remote_error = Some(message);
+        }
+    }
+
+    Ok(archived)
+}
+
+#[tauri::command]
+async fn list_deleted_messages(
+    state: State<'_, AppState>,
+    email: String,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<Vec<DeletedMessageRow>, String> {
+    let normalized_email = email.trim().to_lowercase();
     state
         .storage
-        .delete_message(&normalized_email, &uid)
+        .list_deleted_messages(&normalized_email, limit, offset)
         .await
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| err.to_string())
+}
 
-    Ok(())
+#[tauri::command]
+async fn restore_deleted_message(
+    state: State<'_, AppState>,
+    email: String,
+    uid: String,
+) -> Result<DeletedMessageRow, String> {
+    let normalized_email = email.trim().to_lowercase();
+    state
+        .storage
+        .restore_deleted_message(&normalized_email, &uid)
+        .await
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "Message not found in deleted archive".to_string())
+}
+
+#[tauri::command]
+async fn purge_deleted_message(
+    state: State<'_, AppState>,
+    email: String,
+    uid: String,
+) -> Result<bool, String> {
+    let normalized_email = email.trim().to_lowercase();
+    state
+        .storage
+        .purge_deleted_message(&normalized_email, &uid)
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -2401,7 +2462,10 @@ fn main() {
             set_sender_status,
             list_recent_messages,
             cached_message_count,
-            delete_message_remote,
+            delete_message,
+            list_deleted_messages,
+            restore_deleted_message,
+            purge_deleted_message,
             configure_periodic_sync,
             apply_block_filter,
             disconnect_account,

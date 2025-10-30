@@ -17,8 +17,13 @@ import "@syncfusion/ej2-react-grids/styles/material.css";
 import "bootstrap/dist/css/bootstrap.min.css";
 import "./index.css";
 
-const syncfusionLicenseKey = import.meta.env.VITE_SYNCFUSION_LICENSE;
+const syncfusionLicenseKey = (import.meta.env.VITE_SYNCFUSION_LICENSE as string | undefined)?.trim();
 if (syncfusionLicenseKey) {
+  if (import.meta.env.DEV) {
+    // eslint-disable-next-line no-console
+    console.info(`Registering Syncfusion license (length ${syncfusionLicenseKey.length}).`);
+  }
+  // Register before any Syncfusion component renders to suppress the trial banner.
   registerLicense(syncfusionLicenseKey);
 } else if (import.meta.env.DEV) {
   // eslint-disable-next-line no-console
