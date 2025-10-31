@@ -110,10 +110,22 @@ fn fetch_recent_blocking(
         }
     };
 
-    session.select("INBOX")?;
+    let mailbox = session.select("INBOX")?;
 
-    // Use UID FETCH 1:* to get all UIDs instead of SEARCH to avoid server-imposed limits
-    let fetch_results = session.uid_fetch("1:*", "UID")?;
+    // For fetch_recent, we can use a simpler approach: get the last N messages by sequence number
+    // This is more efficient than fetching all UIDs first
+    let exists = mailbox.exists;
+    if exists == 0 {
+        session.logout()?;
+        return Ok(Vec::new());
+    }
+
+    let start_seq = exists.saturating_sub(limit as u32).max(1);
+    let end_seq = exists;
+    let seq_query = format!("{}:{}", start_seq, end_seq);
+    
+    // Fetch UIDs for this sequence range first
+    let fetch_results = session.fetch(&seq_query, "UID")?;
     let mut uids: Vec<u32> = fetch_results
         .iter()
         .filter_map(|fetch| fetch.uid)
@@ -125,9 +137,7 @@ fn fetch_recent_blocking(
     }
 
     uids.sort_unstable();
-    let end = uids.len();
-    let start = end.saturating_sub(limit);
-    let selected = &uids[start..end];
+    let selected = &uids[..];
     let query = selected
         .iter()
         .map(ToString::to_string)
@@ -195,15 +205,49 @@ fn fetch_all_blocking(
         }
     };
 
-    session.select("INBOX")?;
+    let mailbox = session.select("INBOX")?;
 
-    // Use UID FETCH 1:* to get all UIDs instead of SEARCH to avoid server-imposed limits
-    // Many IMAP servers limit SEARCH ALL to 10,000 results
-    let fetch_results = session.uid_fetch("1:*", "UID")?;
-    let mut uids: Vec<u32> = fetch_results
-        .iter()
-        .filter_map(|fetch| fetch.uid)
-        .collect();
+    // Get the UID range from mailbox status to avoid overwhelming the server
+    // UIDs are not necessarily contiguous, but we can build a range query
+    let uid_next = mailbox.uid_next.unwrap_or(1);
+    
+    if uid_next <= 1 {
+        session.logout()?;
+        return Ok(());
+    }
+
+    // Build UID list by fetching in batches of 10,000 UIDs at a time
+    let mut uids: Vec<u32> = Vec::new();
+    let batch_size: u32 = 10000;
+    let mut start_uid: u32 = 1;
+    let max_uid = uid_next - 1;
+
+    while start_uid <= max_uid {
+        let end_uid = (start_uid + batch_size - 1).min(max_uid);
+        let query = format!("{}:{}", start_uid, end_uid);
+        
+        match session.uid_fetch(&query, "UID") {
+            Ok(fetch_results) => {
+                for fetch in fetch_results.iter() {
+                    if let Some(uid) = fetch.uid {
+                        uids.push(uid);
+                    }
+                }
+            }
+            Err(e) => {
+                info!(
+                    account = %credentials.email,
+                    range = %query,
+                    error = %e,
+                    "Failed to fetch UID batch, continuing with partial results"
+                );
+                // Continue with what we have so far
+                break;
+            }
+        }
+        
+        start_uid = end_uid + 1;
+    }
 
     if uids.is_empty() {
         session.logout()?;
