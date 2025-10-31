@@ -8,6 +8,7 @@ import type {
   SyncReport,
   SenderStatus
 } from "../types";
+import type { AccountLifecycleStatus } from "../stores/accountsStore";
 import { useNotifications } from "../stores/notifications";
 
 const errorMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -22,8 +23,9 @@ interface UseSyncOperationsProps {
   updateSenderStatus: (accountEmail: string, senderEmail: string, status: SenderStatus) => void;
   deleteMessageFromGroups: (accountEmail: string, senderEmail: string, uid: string) => void;
   addDeletedEmail: (accountEmail: string, email: DeletedEmail) => void;
-  setAccountStatus: (email: string, status: string) => void;
+  setAccountStatus: (email: string, status: AccountLifecycleStatus) => void;
   setAccountLastSync: (email: string, timestamp: number) => void;
+  registerRemoteDeletes: (accountEmail: string, uids: string[]) => void;
 }
 
 const MIN_CACHE_FETCH = 1_000;
@@ -39,7 +41,8 @@ export function useSyncOperations({
   deleteMessageFromGroups,
   addDeletedEmail,
   setAccountStatus,
-  setAccountLastSync
+  setAccountLastSync,
+  registerRemoteDeletes
 }: UseSyncOperationsProps) {
   const { notifyError, notifyInfo, notifySuccess } = useNotifications();
   
@@ -275,11 +278,10 @@ export function useSyncOperations({
 
         deleteMessageFromGroups(accountEmail, senderEmail, uid);
         addDeletedEmail(accountEmail, archived);
+        registerRemoteDeletes(account.email, [archived.uid]);
 
         if (archived?.remote_error) {
           notifyError(`Message archived locally but failed to delete remotely: ${archived.remote_error}`);
-        } else {
-          notifySuccess("Message archived locally and deleted from the server.");
         }
       } catch (err) {
         console.error(err);
@@ -288,7 +290,7 @@ export function useSyncOperations({
         setPendingDeleteUid(null);
       }
     },
-    [accounts, addDeletedEmail, deleteMessageFromGroups, notifyError, notifySuccess]
+    [accounts, addDeletedEmail, deleteMessageFromGroups, notifyError, registerRemoteDeletes]
   );
 
   const clearSyncData = useCallback((email: string) => {

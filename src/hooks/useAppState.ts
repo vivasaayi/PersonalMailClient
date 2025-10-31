@@ -2,15 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
 import { listen } from "@tauri-apps/api/event";
 import type {
-  Account,
   ConnectAccountResponse,
   SavedAccount,
   Provider,
   SenderStatus,
   DeletedEmail,
-  RemoteDeleteStatusPayload
+  RemoteDeleteStatusPayload,
+  RemoteDeleteUpdate
 } from "../types";
 import { useAccountsStore } from "../stores/accountsStore";
+import type { AccountLifecycleStatus } from "../stores/accountsStore";
 import { useNotifications } from "../stores/notifications";
 import { useEmailState } from "./useEmailState";
 import { useSyncOperations } from "./useSyncOperations";
@@ -25,6 +26,12 @@ const providerLabels: Record<Provider, string> = {
   custom: "Custom IMAP"
 };
 
+type RemoteDeleteCounters = {
+  pending: number;
+  completed: number;
+  failed: number;
+};
+
 const errorMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
 const MIN_CACHE_FETCH = 1_000;
 const MAX_CACHE_FETCH = 50_000;
@@ -36,7 +43,7 @@ export function useAppState() {
     savedAccounts,
     connectingSavedEmail,
     runtimeByEmail,
-    setAccountStatus,
+    setAccountStatus: setAccountStatusAction,
     setAccountLastSync,
     refreshSavedAccounts,
     connectSavedAccount: connectSavedAccountAction,
@@ -55,6 +62,100 @@ export function useAppState() {
   useEffect(() => {
     deletedEmailsRef.current = emailState.deletedEmailsByAccount;
   }, [emailState.deletedEmailsByAccount]);
+
+  const remoteDeletePendingRef = useRef<Record<string, Set<string>>>({});
+  const [remoteDeleteProgressMap, setRemoteDeleteProgressMap] = useState<
+    Record<string, RemoteDeleteCounters>
+  >({});
+
+  const registerRemoteDeletes = useCallback((accountEmail: string, uids: string[]) => {
+    if (uids.length === 0) return;
+    const normalized = accountEmail.trim().toLowerCase();
+
+    setRemoteDeleteProgressMap((prev) => {
+      const existingSet = new Set(remoteDeletePendingRef.current[normalized] ?? []);
+      let added = 0;
+      for (const uid of uids) {
+        if (!existingSet.has(uid)) {
+          existingSet.add(uid);
+          added += 1;
+        }
+      }
+
+      if (added === 0) {
+        return prev;
+      }
+
+      remoteDeletePendingRef.current[normalized] = existingSet;
+      const previous = prev[normalized];
+      const resetCycle = !previous || previous.pending === 0;
+      const nextEntry: RemoteDeleteCounters = resetCycle
+        ? { pending: existingSet.size, completed: 0, failed: 0 }
+        : { pending: existingSet.size, completed: previous.completed, failed: previous.failed };
+
+      return {
+        ...prev,
+        [normalized]: nextEntry
+      };
+    });
+  }, []);
+
+  const applyRemoteDeleteUpdates = useCallback(
+    (accountEmail: string, updates: RemoteDeleteUpdate[]) => {
+      if (updates.length === 0) return;
+      const normalized = accountEmail.trim().toLowerCase();
+
+      setRemoteDeleteProgressMap((prev) => {
+        const existingSet = new Set(remoteDeletePendingRef.current[normalized] ?? []);
+        let completedInc = 0;
+        let failedInc = 0;
+
+        for (const update of updates) {
+          if (existingSet.has(update.uid)) {
+            existingSet.delete(update.uid);
+            completedInc += 1;
+            if (update.remote_error && update.remote_error.length > 0) {
+              failedInc += 1;
+            }
+          }
+        }
+
+        remoteDeletePendingRef.current[normalized] = existingSet;
+
+        if (completedInc === 0 && failedInc === 0 && !prev[normalized]) {
+          return prev;
+        }
+
+        const previous = prev[normalized] ?? {
+          pending: existingSet.size + completedInc,
+          completed: 0,
+          failed: 0
+        };
+
+        const nextPending = existingSet.size;
+        const nextCounters: RemoteDeleteCounters = {
+          pending: nextPending,
+          completed: previous.completed + completedInc,
+          failed: previous.failed + failedInc
+        };
+
+        if (nextPending === 0) {
+          if (!prev[normalized]) {
+            return prev;
+          }
+          const nextMap = { ...prev };
+          delete nextMap[normalized];
+          return nextMap;
+        }
+
+        return {
+          ...prev,
+          [normalized]: nextCounters
+        };
+      });
+    },
+    []
+  );
   
   const syncOps = useSyncOperations({
     accounts,
@@ -66,8 +167,10 @@ export function useAppState() {
     updateSenderStatus: emailState.updateSenderStatus,
     deleteMessageFromGroups: emailState.deleteMessageFromGroups,
     addDeletedEmail: emailState.addDeletedEmail,
-    setAccountStatus: (email: string, status: string) => setAccountStatus(email, status as any),
-    setAccountLastSync
+    setAccountStatus: (email: string, status: AccountLifecycleStatus) =>
+      setAccountStatusAction(email, status),
+    setAccountLastSync,
+    registerRemoteDeletes
   });
 
   const automationState = useAutomationState();
@@ -158,6 +261,7 @@ export function useAppState() {
       if (!event.payload) return;
       const payload = event.payload;
       emailState.updateDeletedEmailStatus(payload.account_email, payload.updates);
+      applyRemoteDeleteUpdates(payload.account_email, payload.updates);
 
       const existing = deletedEmailsRef.current[payload.account_email] ?? [];
       for (const update of payload.updates) {
@@ -166,8 +270,6 @@ export function useAppState() {
 
         if (typeof update.remote_error === "string" && update.remote_error) {
           notifyError(`Remote delete failed for "${subject}": ${update.remote_error}`);
-        } else if (typeof update.remote_deleted_at === "number") {
-          notifySuccess(`Deleted from server: ${subject}`);
         }
       }
     })
@@ -186,7 +288,7 @@ export function useAppState() {
       mounted = false;
       if (cleanup) cleanup();
     };
-  }, [emailState.updateDeletedEmailStatus, notifyError, notifySuccess]);
+  }, [emailState.updateDeletedEmailStatus, applyRemoteDeleteUpdates, notifyError]);
 
   // Apply connect response
   const applyConnectResponse = useCallback(
@@ -259,6 +361,17 @@ export function useAppState() {
         emailState.clearAccountData(email);
         syncOps.clearSyncData(email);
         automationState.clearAutomationData(email);
+
+        const normalized = email.trim().toLowerCase();
+        delete remoteDeletePendingRef.current[normalized];
+        setRemoteDeleteProgressMap((prev) => {
+          if (!prev[normalized]) {
+            return prev;
+          }
+          const next = { ...prev };
+          delete next[normalized];
+          return next;
+        });
 
         if (uiState.selectedAccount === email) {
           uiState.setSelectedAccount(null);
@@ -435,6 +548,78 @@ export function useAppState() {
     ]
   );
 
+  const handlePurgeSenderMessages = useCallback(
+    async (senderEmail: string) => {
+      if (!uiState.selectedAccount) return;
+      const accountEmail = uiState.selectedAccount;
+      const account = accounts.find((acct) => acct.email === accountEmail);
+      if (!account) {
+        notifyError("Account is not connected.");
+        return;
+      }
+
+      const trimmedSender = senderEmail.trim();
+      if (!trimmedSender) {
+        notifyInfo("Select a sender to purge.");
+        return;
+      }
+
+      try {
+        const archived = await invoke<DeletedEmail[]>("purge_sender_messages", {
+          provider: account.provider,
+          email: account.email,
+          senderEmail: trimmedSender
+        });
+
+        if (!archived.length) {
+          notifyInfo("No cached messages found for that sender.");
+          return;
+        }
+
+        const normalizedSender = trimmedSender.toLowerCase();
+        const uids = archived.map((entry) => entry.uid);
+
+        archived.forEach((entry) => {
+          const senderKey = entry.sender_email?.trim() || normalizedSender;
+          emailState.deleteMessageFromGroups(account.email, senderKey, entry.uid);
+          emailState.addDeletedEmail(account.email, entry);
+        });
+
+        if (uids.length > 0) {
+          registerRemoteDeletes(account.email, uids);
+        }
+
+        await Promise.all([
+          emailState.loadSenderGroups(account.email),
+          emailState.loadCachedEmails(account.email),
+          emailState.loadCachedCount(account.email),
+          emailState.loadDeletedEmails(account.email)
+        ]);
+
+        notifySuccess(
+          `Queued ${uids.length} message${uids.length === 1 ? "" : "s"} from ${trimmedSender} for remote deletion.`
+        );
+      } catch (err) {
+        console.error(err);
+        notifyError(errorMessage(err));
+      }
+    },
+    [
+      accounts,
+      emailState.addDeletedEmail,
+      emailState.deleteMessageFromGroups,
+      emailState.loadCachedCount,
+      emailState.loadCachedEmails,
+      emailState.loadDeletedEmails,
+      emailState.loadSenderGroups,
+      notifyError,
+      notifyInfo,
+      notifySuccess,
+      registerRemoteDeletes,
+      uiState.selectedAccount
+    ]
+  );
+
   return {
     // Account state
     accounts,
@@ -458,6 +643,7 @@ export function useAppState() {
     refreshingAccount: syncOps.refreshingAccount,
     statusUpdating: syncOps.statusUpdating,
     pendingDeleteUid: syncOps.pendingDeleteUid,
+    remoteDeleteProgressByAccount: remoteDeleteProgressMap,
     selectedAccountStatusPills,
     hasMoreEmails,
     isLoadingMoreEmails: loadingMoreEmails,
@@ -503,6 +689,7 @@ export function useAppState() {
         await syncOps.handleDeleteMessage(uiState.selectedAccount, senderEmail, uid);
       }
     },
+    handlePurgeSenderMessages,
     handleLoadMoreEmails,
     
     // Automation handlers

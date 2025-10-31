@@ -655,6 +655,42 @@ impl Storage {
         join_result
     }
 
+    pub async fn message_uids_for_sender(
+        &self,
+        account_email: &str,
+        sender_email: &str,
+    ) -> Result<Vec<String>> {
+        let conn = self.conn.clone();
+        let account = account_email.to_owned();
+        let sender = sender_email.to_owned();
+
+        let join_result = tokio::task::spawn_blocking(move || -> Result<Vec<String>> {
+            let conn = conn.lock();
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT uid
+                FROM messages
+                WHERE account_email = ? AND sender_email = ?
+                ORDER BY date DESC, id DESC
+                "#,
+            )?;
+
+            let mut rows = stmt.query(params![account, sender])?;
+            let mut uids = Vec::new();
+
+            while let Some(row) = rows.next()? {
+                let uid: String = row.get(0)?;
+                uids.push(uid);
+            }
+
+            Ok(uids)
+        })
+        .await
+        .map_err(map_join_error)?;
+
+        join_result
+    }
+
     pub async fn mark_deleted_remote(
         &self,
         account_email: &str,

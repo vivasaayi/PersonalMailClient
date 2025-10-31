@@ -45,6 +45,36 @@ export default function App() {
   const deleteMessage = appState.handleDeleteMessage;
   const [isDeletingFiltered, setIsDeletingFiltered] = useState(false);
 
+  const normalizedSelectedAccount = appState.selectedAccount
+    ? appState.selectedAccount.trim().toLowerCase()
+    : null;
+  const remoteDeleteProgress = normalizedSelectedAccount
+    ? appState.remoteDeleteProgressByAccount[normalizedSelectedAccount] ?? null
+    : null;
+  const remoteDeleteTotals = remoteDeleteProgress
+    ? {
+        total:
+          remoteDeleteProgress.pending +
+          remoteDeleteProgress.completed +
+          remoteDeleteProgress.failed,
+        pending: remoteDeleteProgress.pending,
+        completed: remoteDeleteProgress.completed,
+        failed: remoteDeleteProgress.failed
+      }
+    : null;
+  const remoteDeletePercent = remoteDeleteTotals && remoteDeleteTotals.total > 0
+    ? Math.min(
+        100,
+        ((remoteDeleteTotals.completed + remoteDeleteTotals.failed) /
+          remoteDeleteTotals.total) *
+          100
+      )
+    : 0;
+  const remoteDeleteSummary = remoteDeleteTotals
+    ? `${remoteDeleteTotals.completed} done · ${remoteDeleteTotals.pending} remaining` +
+      (remoteDeleteTotals.failed > 0 ? ` · ${remoteDeleteTotals.failed} failed` : "")
+    : "";
+
   const handleAssistantButtonClick = () => {
     if (assistantActive) {
       if (appState.selectedAccount) {
@@ -246,6 +276,84 @@ export default function App() {
             })
           ]
         ),
+
+        remoteDeleteTotals && remoteDeleteTotals.total > 0
+          ? createElement(
+              "div",
+              {
+                key: "remote-delete-progress",
+                style: {
+                  padding: "12px 16px",
+                  backgroundColor: "#111827",
+                  color: "#f9fafb",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "8px",
+                  borderBottom: "1px solid #1f2937"
+                }
+              },
+              [
+                createElement(
+                  "div",
+                  {
+                    key: "remote-delete-text",
+                    style: {
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: "12px",
+                      fontSize: "0.9rem"
+                    }
+                  },
+                  [
+                    "Deleting messages from the server…",
+                    createElement(
+                      "span",
+                      {
+                        key: "remote-delete-counts",
+                        style: { fontSize: "0.85rem", opacity: 0.85 }
+                      },
+                      remoteDeleteSummary
+                    )
+                  ]
+                ),
+                createElement(
+                  "div",
+                  {
+                    key: "remote-delete-bar",
+                    style: {
+                      height: "6px",
+                      backgroundColor: "#1f2937",
+                      borderRadius: "999px",
+                      overflow: "hidden"
+                    }
+                  },
+                  createElement("div", {
+                    key: "remote-delete-bar-fill",
+                    style: {
+                      width: `${remoteDeletePercent.toFixed(1)}%`,
+                      maxWidth: "100%",
+                      height: "100%",
+                      backgroundColor: "#34d399",
+                      transition: "width 150ms ease-out"
+                    }
+                  })
+                ),
+                ...(remoteDeleteTotals.failed > 0
+                  ? [
+                      createElement(
+                        "div",
+                        {
+                          key: "remote-delete-error",
+                          style: { fontSize: "0.8rem", color: "#fca5a5" }
+                        },
+                        "Some messages could not be removed remotely. Check the Deleted tab for details."
+                      )
+                    ]
+                  : [])
+              ]
+            )
+          : null,
 
         // Content Area
         createElement(
@@ -456,6 +564,7 @@ function renderViewContent(
       statusUpdating: appState.statusUpdating,
       onRefresh: appState.handleRefreshEmails,
       onDeleteMessage: appState.handleDeleteMessage,
+      onPurgeSender: appState.handlePurgeSenderMessages,
       hasSenderData: appState.currentSenderGroups.length > 0
     });
   }

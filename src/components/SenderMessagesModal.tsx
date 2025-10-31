@@ -10,6 +10,7 @@ interface SenderMessagesModalProps {
   onClose: () => void;
   onDeleteMessage: (senderEmail: string, uid: string) => Promise<void>;
   onRefresh: () => Promise<void>;
+  onPurgeSender: (senderEmail: string) => Promise<void>;
 }
 
 const formatDate = (value?: string | null) => {
@@ -26,7 +27,8 @@ export function SenderMessagesModal({
   open,
   onClose,
   onDeleteMessage,
-  onRefresh
+  onRefresh,
+  onPurgeSender
 }: SenderMessagesModalProps) {
   const [selectedMessageUids, setSelectedMessageUids] = useState<Set<string>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
@@ -36,6 +38,7 @@ export function SenderMessagesModal({
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [isAnalyzingMessage, setIsAnalyzingMessage] = useState(false);
   const [emailCopied, setEmailCopied] = useState(false);
+  const [isPurging, setIsPurging] = useState(false);
   const copyResetTimeout = useRef<number | null>(null);
 
   const messages = useMemo(() => sender?.messages ?? [], [sender]);
@@ -51,7 +54,7 @@ export function SenderMessagesModal({
     setAnalysisError(null);
     setIsAnalyzingMessage(false);
   }, [previewMessage?.uid]);
-  const isBusy = isDeleting || deletingUids.size > 0;
+  const isBusy = isDeleting || deletingUids.size > 0 || isPurging;
 
   useEffect(() => {
     setSelectedMessageUids(new Set());
@@ -61,6 +64,7 @@ export function SenderMessagesModal({
     setLlmAnalysis(null);
     setAnalysisError(null);
     setIsAnalyzingMessage(false);
+    setIsPurging(false);
   }, [sender]);
 
   useEffect(() => {
@@ -126,6 +130,26 @@ export function SenderMessagesModal({
       setIsDeleting(false);
     }
   }, [isBusy, onClose, onDeleteMessage, onRefresh, selectedMessageUids, sender]);
+
+  const handlePurgeAll = useCallback(async () => {
+    if (!sender || isPurging || isBusy) {
+      return;
+    }
+
+    setIsPurging(true);
+    const senderEmail = sender.sender_email;
+    try {
+      await onPurgeSender(senderEmail);
+      setSelectedMessageUids(new Set());
+      setPreviewUid(null);
+      onClose();
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error("Failed to purge messages for sender", error);
+    } finally {
+      setIsPurging(false);
+    }
+  }, [isBusy, isPurging, onClose, onPurgeSender, sender]);
 
   useEffect(() => {
     return () => {
@@ -469,9 +493,17 @@ Keep your response concise and format it clearly.`;
             Close
           </BootstrapButton>
           <BootstrapButton
+            variant="outline-danger"
+            onClick={handlePurgeAll}
+            disabled={!sender || totalMessages === 0 || isBusy}
+            className="sender-messages-button"
+          >
+            {isPurging ? "Purging…" : "Purge all messages"}
+          </BootstrapButton>
+          <BootstrapButton
             variant="danger"
             onClick={handleDeleteSelected}
-            disabled={selectedCount === 0 || isDeleting}
+            disabled={selectedCount === 0 || isBusy}
             className="sender-messages-button"
           >
             {isDeleting

@@ -46,6 +46,13 @@ export interface RemoteDeleteStatusPayload {
   updates: RemoteDeleteUpdate[];
 }
 
+export interface RemoteDeleteProgressSummary {
+  account_email: string;
+  total: number;
+  completed: number;
+  failed: number;
+}
+
 export type SenderStatus = "neutral" | "allowed" | "blocked";
 
 export interface AnalyzedMessage {

@@ -1808,6 +1808,98 @@ async fn delete_message(
 }
 
 #[tauri::command]
+async fn purge_sender_messages(
+    state: State<'_, AppState>,
+    provider: Provider,
+    email: String,
+    sender_email: String,
+) -> Result<Vec<DeletedMessageRow>, String> {
+    let normalized_email = email.trim().to_lowercase();
+    let normalized_sender = sender_email.trim().to_lowercase();
+
+    let credentials = {
+        let accounts = state.accounts.read().await;
+        accounts
+            .get(&normalized_email)
+            .cloned()
+            .ok_or_else(|| "Account is not connected".to_string())?
+    };
+
+    if credentials.provider != provider {
+        return Err("Provider mismatch for stored credentials".into());
+    }
+
+    let uids = state
+        .storage
+        .message_uids_for_sender(&normalized_email, &normalized_sender)
+        .await
+        .map_err(|err| err.to_string())?;
+
+    if uids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut archived_rows = Vec::new();
+
+    for uid in uids {
+        let mut archived = match state
+            .storage
+            .archive_message(&normalized_email, &uid)
+            .await
+            .map_err(|err| err.to_string())?
+        {
+            Some(row) => row,
+            None => continue,
+        };
+
+        if let Err(err) = state
+            .remote_delete
+            .enqueue(&normalized_email, credentials.clone(), uid.clone())
+            .await
+        {
+            warn!(
+                %normalized_email,
+                %uid,
+                ?err,
+                "failed to enqueue remote delete for sender purge; attempting synchronous fallback"
+            );
+
+            match providers::delete_message(&credentials, &uid).await {
+                Ok(_) => {
+                    let now = Utc::now().timestamp();
+                    state
+                        .storage
+                        .mark_deleted_remote(&normalized_email, &uid, Some(now), None)
+                        .await
+                        .map_err(|err| err.to_string())?;
+                    archived.remote_deleted_at = Some(now);
+                    archived.remote_error = None;
+                }
+                Err(delete_err) => {
+                    error!(
+                        %normalized_email,
+                        %uid,
+                        ?delete_err,
+                        "remote delete fallback failed during sender purge"
+                    );
+                    let message = provider_error_to_message(delete_err);
+                    state
+                        .storage
+                        .mark_deleted_remote(&normalized_email, &uid, None, Some(message.clone()))
+                        .await
+                        .map_err(|err| err.to_string())?;
+                    archived.remote_error = Some(message);
+                }
+            }
+        }
+
+        archived_rows.push(archived);
+    }
+
+    Ok(archived_rows)
+}
+
+#[tauri::command]
 async fn list_deleted_messages(
     state: State<'_, AppState>,
     email: String,
@@ -2511,6 +2603,7 @@ fn main() {
             list_recent_messages,
             cached_message_count,
             delete_message,
+            purge_sender_messages,
             list_deleted_messages,
             restore_deleted_message,
             purge_deleted_message,

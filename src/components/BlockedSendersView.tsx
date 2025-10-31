@@ -35,6 +35,7 @@ interface BlockedSendersViewProps {
   statusUpdating: string | null;
   onRefresh: () => Promise<void>;
   onDeleteMessage: (senderEmail: string, uid: string) => Promise<void>;
+  onPurgeSender: (senderEmail: string) => Promise<void>;
   hasSenderData: boolean;
 }
 
@@ -81,6 +82,7 @@ export default function BlockedSendersView({
   statusUpdating,
   onRefresh,
   onDeleteMessage,
+  onPurgeSender,
   hasSenderData
 }: BlockedSendersViewProps) {
   const selectionSettings = useMemo<SelectionSettingsModel>(
@@ -99,6 +101,7 @@ export default function BlockedSendersView({
   }, [senderGroups]);
 
   const [activeSenderEmail, setActiveSenderEmail] = useState<string | null>(null);
+  const [purgingSender, setPurgingSender] = useState<string | null>(null);
 
   const gridData = useMemo<SenderRow[]>(() => {
     return senderGroups
@@ -155,9 +158,42 @@ export default function BlockedSendersView({
     [handleOpenSenderMessages]
   );
 
+  const handlePurgeSender = useCallback(
+    async (senderEmail: string) => {
+      const trimmed = senderEmail.trim();
+      if (!trimmed) {
+        return;
+      }
+      if (purgingSender) {
+        return;
+      }
+
+      let started = false;
+      setPurgingSender((current) => {
+        if (current) {
+          return current;
+        }
+        started = true;
+        return trimmed;
+      });
+      if (!started) {
+        return;
+      }
+      try {
+        await onPurgeSender(trimmed);
+      } catch (err) {
+        console.error("Failed to purge sender", err);
+      } finally {
+        setPurgingSender((current) => (current === trimmed ? null : current));
+      }
+    },
+    [onPurgeSender, purgingSender]
+  );
+
   const statusActionsTemplate = useCallback(
     (props: SenderRow) => {
-      const palette = statusPalette[props.status];
+      const isPurging = purgingSender === props.senderEmail;
+      const purgeDisabled = Boolean(purgingSender);
       return (
         <div
           style={{
@@ -177,10 +213,17 @@ export default function BlockedSendersView({
             isUpdating={statusUpdating === props.senderEmail}
             onStatusChange={(nextStatus) => onStatusChange(props.senderEmail, nextStatus)}
           />
+          <ButtonComponent
+            cssClass="ghost-button"
+            content={isPurging ? "Purging…" : "Purge"}
+            disabled={purgeDisabled}
+            onClick={() => handlePurgeSender(props.senderEmail)}
+            style={{ borderColor: "#fca5a5", color: "#f87171" }}
+          />
         </div>
       );
     },
-    []
+    [handlePurgeSender, purgingSender]
   );
 
   if (!hasSenderData) {
@@ -316,6 +359,7 @@ export default function BlockedSendersView({
         onClose={handleCloseMessagesModal}
         onDeleteMessage={onDeleteMessage}
         onRefresh={onRefresh}
+        onPurgeSender={handlePurgeSender}
       />
     </div>
   );
