@@ -20,24 +20,52 @@ import type { SenderGroup } from "./types";
 
 const SYNCFUSION_BANNER_OFFSET = 72;
 
-function GlobalProgressBar({ deleteProgress, purgeProgress }: { 
+function GlobalProgressBar({
+  deleteProgress,
+  purgeProgress,
+  remoteDeleteProgress
+}: {
   deleteProgress: { completed: number; total: number; failed: number } | null;
   purgeProgress: { senderEmail: string; completed: number; total: number } | null;
+  remoteDeleteProgress: { pending: number; completed: number; failed: number; total: number; summary?: string } | null;
 }) {
-  const progress = deleteProgress || purgeProgress;
+  const progress = deleteProgress || purgeProgress || remoteDeleteProgress;
   if (!progress) return null;
 
-  let processed, percent, text, showDetails = false;
+  let processed: number;
+  let percent: number;
+  let text: string;
+  let barColor = "#dc2626";
+  let detailsText: string | null = null;
   
   if (deleteProgress) {
     processed = deleteProgress.completed + deleteProgress.failed;
     percent = deleteProgress.total > 0 ? (processed / deleteProgress.total) * 100 : 0;
     text = `Deleting messages... ${processed} / ${deleteProgress.total}${deleteProgress.failed > 0 ? ` (${deleteProgress.failed} failed)` : ''}`;
-    showDetails = true;
+    detailsText = deleteProgress.failed > 0 ? `${deleteProgress.completed} successful, ${deleteProgress.failed} failed` : null;
   } else if (purgeProgress) {
     processed = purgeProgress.completed;
     percent = purgeProgress.total > 0 ? (processed / purgeProgress.total) * 100 : 0;
     text = `Purging messages from ${purgeProgress.senderEmail}... ${processed} / ${purgeProgress.total}`;
+    barColor = "#dc2626";
+  } else if (remoteDeleteProgress) {
+    const completed = remoteDeleteProgress.completed;
+    const failed = remoteDeleteProgress.failed;
+    const pending = remoteDeleteProgress.pending;
+    processed = completed + failed;
+    percent = remoteDeleteProgress.total > 0 ? (processed / remoteDeleteProgress.total) * 100 : 0;
+    text = `Removing messages from server… ${processed} / ${remoteDeleteProgress.total}`;
+    if (pending > 0) {
+      text += ` · ${pending} remaining`;
+    }
+    if (failed > 0) {
+      text += ` (${failed} failed)`;
+      barColor = "#f59e0b";
+      detailsText = `${completed} removed · ${failed} failed`;
+    } else {
+      barColor = "#34d399";
+      detailsText = remoteDeleteProgress.summary ?? null;
+    }
   } else {
     return null;
   }
@@ -76,14 +104,14 @@ function GlobalProgressBar({ deleteProgress, purgeProgress }: {
         style: {
           width: `${percent}%`,
           height: '100%',
-          backgroundColor: deleteProgress && deleteProgress.failed > 0 ? '#f59e0b' : '#dc2626',
+          backgroundColor: barColor,
           transition: 'width 0.3s ease'
         }
       })),
-      showDetails && deleteProgress && deleteProgress.failed > 0 && createElement('div', {
+      detailsText && createElement('div', {
         key: 'progress-details',
         style: { fontSize: '0.75rem', color: '#6b7280' }
-      }, `${deleteProgress.completed} successful, ${deleteProgress.failed} failed`)
+      }, detailsText)
     ].filter(Boolean))
   ]);
 }
@@ -146,6 +174,15 @@ export default function App() {
     ? `${remoteDeleteTotals.completed} done · ${remoteDeleteTotals.pending} remaining` +
       (remoteDeleteTotals.failed > 0 ? ` · ${remoteDeleteTotals.failed} failed` : "")
     : "";
+  const remoteDeleteGlobalProgress = remoteDeleteTotals
+    ? {
+        pending: remoteDeleteTotals.pending,
+        completed: remoteDeleteTotals.completed,
+        failed: remoteDeleteTotals.failed,
+        total: remoteDeleteTotals.total,
+        summary: remoteDeleteSummary
+      }
+    : null;
 
   const handleAssistantButtonClick = () => {
     if (assistantActive) {
@@ -526,7 +563,12 @@ export default function App() {
       onOpenConnectionWizard: appState.handleOpenConnectionWizard
     }),
 
-    createElement(GlobalProgressBar, { key: "global-progress", deleteProgress, purgeProgress }),
+    createElement(GlobalProgressBar, {
+      key: "global-progress",
+      deleteProgress,
+      purgeProgress,
+      remoteDeleteProgress: remoteDeleteGlobalProgress
+    }),
     createElement(NotificationsHost, { key: "notifications-host" }),
     createElement(BulkAnalysisPanel, {
       key: "bulk-analysis-panel",
