@@ -44,7 +44,7 @@ interface MailboxProps {
   onToggleExpansion: (senderEmail: string) => void;
   onStatusChange: (senderEmail: string, status: SenderStatus) => Promise<void>;
   statusUpdating: string | null;
-  onDeleteMessage: (senderEmail: string, uid: string) => Promise<void>;
+  onDeleteMessage: (senderEmail: string, uid: string, options?: { suppressNotifications?: boolean }) => Promise<void>;
   pendingDeleteUid: string | null;
   hasMoreEmails: boolean;
   onLoadMoreEmails: () => Promise<void> | void;

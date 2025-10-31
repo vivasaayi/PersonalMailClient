@@ -67,6 +67,8 @@ export function useAppState() {
   const [remoteDeleteProgressMap, setRemoteDeleteProgressMap] = useState<
     Record<string, RemoteDeleteCounters>
   >({});
+  
+  const [purgeProgress, setPurgeProgress] = useState<{ senderEmail: string; completed: number; total: number } | null>(null);
 
   const registerRemoteDeletes = useCallback((accountEmail: string, uids: string[]) => {
     if (uids.length === 0) return;
@@ -550,6 +552,9 @@ export function useAppState() {
 
   const handlePurgeSenderMessages = useCallback(
     async (senderEmail: string) => {
+      const onProgress = (progress: { senderEmail: string; completed: number; total: number } | null) => {
+        setPurgeProgress(progress);
+      };
       if (!uiState.selectedAccount) return;
       const accountEmail = uiState.selectedAccount;
       const account = accounts.find((acct) => acct.email === accountEmail);
@@ -565,13 +570,31 @@ export function useAppState() {
       }
 
       try {
+        // First get the message count for this sender to show progress
+        const senderGroup = currentSenderGroups.find(group => 
+          group.sender_email.toLowerCase() === trimmedSender.toLowerCase()
+        );
+        const totalMessages = senderGroup?.message_count ?? 0;
+
+        if (totalMessages === 0) {
+          notifyInfo("No cached messages found for that sender.");
+          return;
+        }
+
+        // Set initial progress
+        onProgress?.({ senderEmail: trimmedSender, completed: 0, total: totalMessages });
+
         const archived = await invoke<DeletedEmail[]>("purge_sender_messages", {
           provider: account.provider,
           email: account.email,
           senderEmail: trimmedSender
         });
 
+        // Update progress as completed
+        onProgress?.({ senderEmail: trimmedSender, completed: archived.length, total: totalMessages });
+
         if (!archived.length) {
+          onProgress?.(null);
           notifyInfo("No cached messages found for that sender.");
           return;
         }
@@ -596,16 +619,21 @@ export function useAppState() {
           emailState.loadDeletedEmails(account.email)
         ]);
 
+        // Clear progress after a short delay
+        setTimeout(() => onProgress?.(null), 2000);
+
         notifySuccess(
           `Queued ${uids.length} message${uids.length === 1 ? "" : "s"} from ${trimmedSender} for remote deletion.`
         );
       } catch (err) {
         console.error(err);
+        onProgress?.(null);
         notifyError(errorMessage(err));
       }
     },
     [
       accounts,
+      currentSenderGroups,
       emailState.addDeletedEmail,
       emailState.deleteMessageFromGroups,
       emailState.loadCachedCount,
@@ -647,6 +675,7 @@ export function useAppState() {
     selectedAccountStatusPills,
     hasMoreEmails,
     isLoadingMoreEmails: loadingMoreEmails,
+    purgeProgress,
     
     // Automation state
     ...automationState,
@@ -684,9 +713,9 @@ export function useAppState() {
         await syncOps.handleSenderStatusChange(uiState.selectedAccount, senderEmail, status);
       }
     },
-    handleDeleteMessage: async (senderEmail: string, uid: string) => {
+    handleDeleteMessage: async (senderEmail: string, uid: string, options?: { suppressNotifications?: boolean }) => {
       if (uiState.selectedAccount) {
-        await syncOps.handleDeleteMessage(uiState.selectedAccount, senderEmail, uid);
+        await syncOps.handleDeleteMessage(uiState.selectedAccount, senderEmail, uid, options);
       }
     },
     handlePurgeSenderMessages,

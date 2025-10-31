@@ -8,7 +8,7 @@ interface SenderMessagesModalProps {
   sender: SenderGroup | null;
   open: boolean;
   onClose: () => void;
-  onDeleteMessage: (senderEmail: string, uid: string) => Promise<void>;
+  onDeleteMessage: (senderEmail: string, uid: string, options?: { suppressNotifications?: boolean }) => Promise<void>;
   onRefresh: () => Promise<void>;
   onPurgeSender: (senderEmail: string) => Promise<void>;
 }

@@ -24,7 +24,8 @@ interface BlockedDomainsViewProps {
   onStatusChange: (senderEmail: string, status: SenderStatus) => Promise<void>;
   statusUpdating: string | null;
   onRefresh: () => Promise<void>;
-  onDeleteMessage: (senderEmail: string, uid: string) => Promise<void>;
+  onDeleteMessage: (senderEmail: string, uid: string, options?: { suppressNotifications?: boolean }) => Promise<void>;
+  onPurgeSender: (senderEmail: string) => Promise<void>;
   hasSenderData: boolean;
 }
 
@@ -268,6 +269,7 @@ export default function BlockedDomainsView({
   statusUpdating,
   onRefresh,
   onDeleteMessage,
+  onPurgeSender,
   hasSenderData
 }: BlockedDomainsViewProps) {
   const selectionSettings = useMemo<SelectionSettingsModel>(
@@ -550,6 +552,7 @@ export default function BlockedDomainsView({
         onClose={handleCloseSenderModal}
         onDeleteMessage={onDeleteMessage}
         onRefresh={onRefresh}
+        onPurgeSender={onPurgeSender}
       />
     </div>
   );

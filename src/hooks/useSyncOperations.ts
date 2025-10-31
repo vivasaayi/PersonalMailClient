@@ -262,7 +262,7 @@ export function useSyncOperations({
   );
 
   const handleDeleteMessage = useCallback(
-    async (accountEmail: string, senderEmail: string, uid: string) => {
+    async (accountEmail: string, senderEmail: string, uid: string, options?: { suppressNotifications?: boolean }) => {
       const account = accounts.find((acct) => acct.email === accountEmail);
       if (!account) return;
 
@@ -280,14 +280,47 @@ export function useSyncOperations({
         addDeletedEmail(accountEmail, archived);
         registerRemoteDeletes(account.email, [archived.uid]);
 
-        if (archived?.remote_error) {
+        if (archived?.remote_error && !options?.suppressNotifications) {
           notifyError(`Message archived locally but failed to delete remotely: ${archived.remote_error}`);
         }
       } catch (err) {
         console.error(err);
-        notifyError(errorMessage(err));
+        if (!options?.suppressNotifications) {
+          notifyError(errorMessage(err));
+        }
+        throw err; // Re-throw so bulk delete can catch it
       } finally {
         setPendingDeleteUid(null);
+      }
+    },
+    [accounts, addDeletedEmail, deleteMessageFromGroups, notifyError, registerRemoteDeletes]
+  );
+
+  const handlePurgeSenderMessages = useCallback(
+    async (accountEmail: string, senderEmail: string) => {
+      const account = accounts.find((acct) => acct.email === accountEmail);
+      if (!account) return [];
+
+      try {
+        const archived = await invoke<DeletedEmail[]>("purge_sender_messages", {
+          provider: account.provider,
+          email: account.email,
+          senderEmail
+        });
+
+        // Update local state for each deleted message
+        for (const deleted of archived) {
+          deleteMessageFromGroups(accountEmail, senderEmail, deleted.uid);
+          addDeletedEmail(accountEmail, deleted);
+        }
+
+        registerRemoteDeletes(account.email, archived.map(a => a.uid));
+
+        return archived;
+      } catch (err) {
+        console.error(err);
+        notifyError(errorMessage(err));
+        throw err;
       }
     },
     [accounts, addDeletedEmail, deleteMessageFromGroups, notifyError, registerRemoteDeletes]
@@ -316,6 +349,7 @@ export function useSyncOperations({
     handleFullSync,
     handleSenderStatusChange,
     handleDeleteMessage,
+    handlePurgeSenderMessages,
     clearSyncData
   };
 }

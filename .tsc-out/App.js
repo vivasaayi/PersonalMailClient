@@ -15,9 +15,75 @@ import LlmAssistantView from "./components/LlmAssistantView";
 import BulkAnalysisPanel from "./components/BulkAnalysisPanel";
 import DeletedEmailsView from "./components/DeletedEmailsView";
 import { useBulkAnalysis } from "./stores/bulkAnalysisStore";
+import { useNotifications } from "./stores/notifications";
 const SYNCFUSION_BANNER_OFFSET = 72;
+function GlobalProgressBar({ deleteProgress, purgeProgress }) {
+    const progress = deleteProgress || purgeProgress;
+    if (!progress)
+        return null;
+    let processed, percent, text, showDetails = false;
+    if (deleteProgress) {
+        processed = deleteProgress.completed + deleteProgress.failed;
+        percent = deleteProgress.total > 0 ? (processed / deleteProgress.total) * 100 : 0;
+        text = `Deleting messages... ${processed} / ${deleteProgress.total}${deleteProgress.failed > 0 ? ` (${deleteProgress.failed} failed)` : ''}`;
+        showDetails = true;
+    }
+    else if (purgeProgress) {
+        processed = purgeProgress.completed;
+        percent = purgeProgress.total > 0 ? (processed / purgeProgress.total) * 100 : 0;
+        text = `Purging messages from ${purgeProgress.senderEmail}... ${processed} / ${purgeProgress.total}`;
+    }
+    else {
+        return null;
+    }
+    return createElement('div', {
+        style: {
+            position: 'fixed',
+            top: `${SYNCFUSION_BANNER_OFFSET}px`,
+            left: 0,
+            right: 0,
+            zIndex: 1200,
+            backgroundColor: '#ffffff',
+            borderBottom: '1px solid #e5e7eb',
+            boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)',
+            padding: '12px 24px'
+        }
+    }, [
+        createElement('div', {
+            key: 'progress-container',
+            style: { display: 'flex', flexDirection: 'column', gap: '8px', maxWidth: '400px' }
+        }, [
+            createElement('div', {
+                key: 'progress-text',
+                style: { fontSize: '0.875rem', color: '#374151', fontWeight: '500' }
+            }, text),
+            createElement('div', {
+                key: 'progress-bar',
+                style: {
+                    width: '100%',
+                    height: '6px',
+                    backgroundColor: '#e5e7eb',
+                    borderRadius: '3px',
+                    overflow: 'hidden'
+                }
+            }, createElement('div', {
+                style: {
+                    width: `${percent}%`,
+                    height: '100%',
+                    backgroundColor: deleteProgress && deleteProgress.failed > 0 ? '#f59e0b' : '#dc2626',
+                    transition: 'width 0.3s ease'
+                }
+            })),
+            showDetails && deleteProgress && deleteProgress.failed > 0 && createElement('div', {
+                key: 'progress-details',
+                style: { fontSize: '0.75rem', color: '#6b7280' }
+            }, `${deleteProgress.completed} successful, ${deleteProgress.failed} failed`)
+        ].filter(Boolean))
+    ]);
+}
 export default function App() {
     const appState = useAppState();
+    const { notifyError, notifyInfo, notifySuccess } = useNotifications();
     const { availableTags, currentRun, isPanelOpen, isStarting, lastError, lastRunTags, startAnalysis, setPanelOpen, togglePanel, activeTagFilter, toggleTagFilter, clearTagFilter, addKnownTags } = useBulkAnalysis();
     const periodicMinutes = appState.selectedAccount
         ? appState.periodicMinutesByAccount[appState.selectedAccount] ?? 0
@@ -25,6 +91,33 @@ export default function App() {
     const assistantActive = appState.currentView === "assistant";
     const deleteMessage = appState.handleDeleteMessage;
     const [isDeletingFiltered, setIsDeletingFiltered] = useState(false);
+    const [deleteProgress, setDeleteProgress] = useState(null);
+    const purgeProgress = appState.purgeProgress || null;
+    const normalizedSelectedAccount = appState.selectedAccount
+        ? appState.selectedAccount.trim().toLowerCase()
+        : null;
+    const remoteDeleteProgress = normalizedSelectedAccount
+        ? appState.remoteDeleteProgressByAccount[normalizedSelectedAccount] ?? null
+        : null;
+    const remoteDeleteTotals = remoteDeleteProgress
+        ? {
+            total: remoteDeleteProgress.pending +
+                remoteDeleteProgress.completed +
+                remoteDeleteProgress.failed,
+            pending: remoteDeleteProgress.pending,
+            completed: remoteDeleteProgress.completed,
+            failed: remoteDeleteProgress.failed
+        }
+        : null;
+    const remoteDeletePercent = remoteDeleteTotals && remoteDeleteTotals.total > 0
+        ? Math.min(100, ((remoteDeleteTotals.completed + remoteDeleteTotals.failed) /
+            remoteDeleteTotals.total) *
+            100)
+        : 0;
+    const remoteDeleteSummary = remoteDeleteTotals
+        ? `${remoteDeleteTotals.completed} done · ${remoteDeleteTotals.pending} remaining` +
+            (remoteDeleteTotals.failed > 0 ? ` · ${remoteDeleteTotals.failed} failed` : "")
+        : "";
     const handleAssistantButtonClick = () => {
         if (assistantActive) {
             if (appState.selectedAccount) {
@@ -98,16 +191,60 @@ export default function App() {
         if (mailboxData.messageRefs.length === 0) {
             return;
         }
+        const total = mailboxData.messageRefs.length;
         setIsDeletingFiltered(true);
+        setDeleteProgress({ completed: 0, total, failed: 0 });
+        let completed = 0;
+        let failed = 0;
+        const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
         try {
             for (const item of mailboxData.messageRefs) {
-                await deleteMessage(item.senderEmail, item.uid);
+                let retryCount = 0;
+                const maxRetries = 3;
+                while (retryCount <= maxRetries) {
+                    try {
+                        await deleteMessage(item.senderEmail, item.uid, { suppressNotifications: true });
+                        completed += 1;
+                        setDeleteProgress({ completed, total, failed });
+                        break; // Success, exit retry loop
+                    }
+                    catch (error) {
+                        console.error(`Failed to delete message ${item.uid} (attempt ${retryCount + 1}/${maxRetries + 1}):`, error);
+                        if (retryCount < maxRetries) {
+                            // Exponential backoff: 1s, 2s, 4s
+                            const backoffDelay = Math.pow(2, retryCount) * 1000;
+                            await delay(backoffDelay);
+                            retryCount += 1;
+                        }
+                        else {
+                            // Max retries reached, mark as failed
+                            failed += 1;
+                            setDeleteProgress({ completed, total, failed });
+                            break;
+                        }
+                    }
+                }
+                // Add a small delay between deletions to respect rate limits
+                if (completed + failed < total) {
+                    await delay(200); // 200ms delay between operations
+                }
+            }
+            // Show final notification
+            if (failed === 0) {
+                notifySuccess(`Successfully deleted ${completed} messages.`);
+            }
+            else if (completed === 0) {
+                notifyError(`Failed to delete any messages. Check logs for details.`);
+            }
+            else {
+                notifyInfo(`Deleted ${completed} messages, ${failed} failed. Check logs for details.`);
             }
         }
         finally {
             setIsDeletingFiltered(false);
+            setDeleteProgress(null);
         }
-    }, [deleteMessage, mailboxData.messageRefs]);
+    }, [deleteMessage, mailboxData.messageRefs, notifySuccess, notifyError, notifyInfo]);
     const handleStartAnalysis = useCallback(async (options) => {
         await startAnalysis(options);
     }, [startAnalysis]);
@@ -188,6 +325,63 @@ export default function App() {
                     onClick: handleAssistantButtonClick
                 })
             ]),
+            remoteDeleteTotals && remoteDeleteTotals.total > 0
+                ? createElement("div", {
+                    key: "remote-delete-progress",
+                    style: {
+                        padding: "12px 16px",
+                        backgroundColor: "#111827",
+                        color: "#f9fafb",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "8px",
+                        borderBottom: "1px solid #1f2937"
+                    }
+                }, [
+                    createElement("div", {
+                        key: "remote-delete-text",
+                        style: {
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            gap: "12px",
+                            fontSize: "0.9rem"
+                        }
+                    }, [
+                        "Deleting messages from the server…",
+                        createElement("span", {
+                            key: "remote-delete-counts",
+                            style: { fontSize: "0.85rem", opacity: 0.85 }
+                        }, remoteDeleteSummary)
+                    ]),
+                    createElement("div", {
+                        key: "remote-delete-bar",
+                        style: {
+                            height: "6px",
+                            backgroundColor: "#1f2937",
+                            borderRadius: "999px",
+                            overflow: "hidden"
+                        }
+                    }, createElement("div", {
+                        key: "remote-delete-bar-fill",
+                        style: {
+                            width: `${remoteDeletePercent.toFixed(1)}%`,
+                            maxWidth: "100%",
+                            height: "100%",
+                            backgroundColor: "#34d399",
+                            transition: "width 150ms ease-out"
+                        }
+                    })),
+                    ...(remoteDeleteTotals.failed > 0
+                        ? [
+                            createElement("div", {
+                                key: "remote-delete-error",
+                                style: { fontSize: "0.8rem", color: "#fca5a5" }
+                            }, "Some messages could not be removed remotely. Check the Deleted tab for details.")
+                        ]
+                        : [])
+                ])
+                : null,
             // Content Area
             createElement("div", {
                 key: "content-area",
@@ -232,6 +426,7 @@ export default function App() {
             connectingSavedEmail: appState.connectingSavedEmail,
             onOpenConnectionWizard: appState.handleOpenConnectionWizard
         }),
+        createElement(GlobalProgressBar, { key: "global-progress", deleteProgress, purgeProgress }),
         createElement(NotificationsHost, { key: "notifications-host" }),
         createElement(BulkAnalysisPanel, {
             key: "bulk-analysis-panel",
@@ -248,7 +443,8 @@ export default function App() {
             onClearFilter: clearTagFilter,
             filteredMessageCount: mailboxData.messageCount,
             onDeleteFiltered: handleDeleteFiltered,
-            isDeletingFiltered
+            isDeletingFiltered,
+            deleteProgress
         })
     ]);
 }
@@ -354,6 +550,7 @@ function renderViewContent(appState, periodicMinutes, mailboxData, bulkUi) {
             statusUpdating: appState.statusUpdating,
             onRefresh: appState.handleRefreshEmails,
             onDeleteMessage: appState.handleDeleteMessage,
+            onPurgeSender: appState.handlePurgeSenderMessages,
             hasSenderData: appState.currentSenderGroups.length > 0
         });
     }
@@ -366,6 +563,7 @@ function renderViewContent(appState, periodicMinutes, mailboxData, bulkUi) {
             statusUpdating: appState.statusUpdating,
             onRefresh: appState.handleRefreshEmails,
             onDeleteMessage: appState.handleDeleteMessage,
+            onPurgeSender: appState.handlePurgeSenderMessages,
             hasSenderData: appState.currentSenderGroups.length > 0
         });
     }

@@ -1,4 +1,4 @@
-import { createElement, useCallback, useEffect, useMemo, useState } from "react";
+import { createElement, useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { ButtonComponent } from "@syncfusion/ej2-react-buttons";
 import { useAppState } from "./hooks/useAppState";
 import NavigationDrawer from "./components/NavigationDrawer";
@@ -15,12 +15,82 @@ import LlmAssistantView from "./components/LlmAssistantView";
 import BulkAnalysisPanel from "./components/BulkAnalysisPanel";
 import DeletedEmailsView from "./components/DeletedEmailsView";
 import { useBulkAnalysis } from "./stores/bulkAnalysisStore";
+import { useNotifications } from "./stores/notifications";
 import type { SenderGroup } from "./types";
 
 const SYNCFUSION_BANNER_OFFSET = 72;
 
+function GlobalProgressBar({ deleteProgress, purgeProgress }: { 
+  deleteProgress: { completed: number; total: number; failed: number } | null;
+  purgeProgress: { senderEmail: string; completed: number; total: number } | null;
+}) {
+  const progress = deleteProgress || purgeProgress;
+  if (!progress) return null;
+
+  let processed, percent, text, showDetails = false;
+  
+  if (deleteProgress) {
+    processed = deleteProgress.completed + deleteProgress.failed;
+    percent = deleteProgress.total > 0 ? (processed / deleteProgress.total) * 100 : 0;
+    text = `Deleting messages... ${processed} / ${deleteProgress.total}${deleteProgress.failed > 0 ? ` (${deleteProgress.failed} failed)` : ''}`;
+    showDetails = true;
+  } else if (purgeProgress) {
+    processed = purgeProgress.completed;
+    percent = purgeProgress.total > 0 ? (processed / purgeProgress.total) * 100 : 0;
+    text = `Purging messages from ${purgeProgress.senderEmail}... ${processed} / ${purgeProgress.total}`;
+  } else {
+    return null;
+  }
+
+  return createElement('div', {
+    style: {
+      position: 'fixed',
+      top: `${SYNCFUSION_BANNER_OFFSET}px`,
+      left: 0,
+      right: 0,
+      zIndex: 1200,
+      backgroundColor: '#ffffff',
+      borderBottom: '1px solid #e5e7eb',
+      boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)',
+      padding: '12px 24px'
+    }
+  }, [
+    createElement('div', {
+      key: 'progress-container',
+      style: { display: 'flex', flexDirection: 'column', gap: '8px', maxWidth: '400px' }
+    }, [
+      createElement('div', {
+        key: 'progress-text',
+        style: { fontSize: '0.875rem', color: '#374151', fontWeight: '500' }
+      }, text),
+      createElement('div', {
+        key: 'progress-bar',
+        style: {
+          width: '100%',
+          height: '6px',
+          backgroundColor: '#e5e7eb',
+          borderRadius: '3px',
+          overflow: 'hidden'
+        }
+      }, createElement('div', {
+        style: {
+          width: `${percent}%`,
+          height: '100%',
+          backgroundColor: deleteProgress && deleteProgress.failed > 0 ? '#f59e0b' : '#dc2626',
+          transition: 'width 0.3s ease'
+        }
+      })),
+      showDetails && deleteProgress && deleteProgress.failed > 0 && createElement('div', {
+        key: 'progress-details',
+        style: { fontSize: '0.75rem', color: '#6b7280' }
+      }, `${deleteProgress.completed} successful, ${deleteProgress.failed} failed`)
+    ].filter(Boolean))
+  ]);
+}
+
 export default function App() {
   const appState = useAppState();
+  const { notifyError, notifyInfo, notifySuccess } = useNotifications();
   const {
     availableTags,
     currentRun,
@@ -44,7 +114,9 @@ export default function App() {
   const assistantActive = appState.currentView === "assistant";
   const deleteMessage = appState.handleDeleteMessage;
   const [isDeletingFiltered, setIsDeletingFiltered] = useState(false);
-
+  const [deleteProgress, setDeleteProgress] = useState<{ completed: number; total: number; failed: number } | null>(null);
+  const purgeProgress = appState.purgeProgress || null;
+  
   const normalizedSelectedAccount = appState.selectedAccount
     ? appState.selectedAccount.trim().toLowerCase()
     : null;
@@ -167,15 +239,61 @@ export default function App() {
       return;
     }
 
+    const total = mailboxData.messageRefs.length;
     setIsDeletingFiltered(true);
+    setDeleteProgress({ completed: 0, total, failed: 0 });
+    let completed = 0;
+    let failed = 0;
+
+    const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
     try {
       for (const item of mailboxData.messageRefs) {
-        await deleteMessage(item.senderEmail, item.uid);
+        let retryCount = 0;
+        const maxRetries = 3;
+        
+        while (retryCount <= maxRetries) {
+          try {
+            await deleteMessage(item.senderEmail, item.uid, { suppressNotifications: true });
+            completed += 1;
+            setDeleteProgress({ completed, total, failed });
+            break; // Success, exit retry loop
+          } catch (error) {
+            console.error(`Failed to delete message ${item.uid} (attempt ${retryCount + 1}/${maxRetries + 1}):`, error);
+            
+            if (retryCount < maxRetries) {
+              // Exponential backoff: 1s, 2s, 4s
+              const backoffDelay = Math.pow(2, retryCount) * 1000;
+              await delay(backoffDelay);
+              retryCount += 1;
+            } else {
+              // Max retries reached, mark as failed
+              failed += 1;
+              setDeleteProgress({ completed, total, failed });
+              break;
+            }
+          }
+        }
+
+        // Add a small delay between deletions to respect rate limits
+        if (completed + failed < total) {
+          await delay(200); // 200ms delay between operations
+        }
+      }
+
+      // Show final notification
+      if (failed === 0) {
+        notifySuccess(`Successfully deleted ${completed} messages.`);
+      } else if (completed === 0) {
+        notifyError(`Failed to delete any messages. Check logs for details.`);
+      } else {
+        notifyInfo(`Deleted ${completed} messages, ${failed} failed. Check logs for details.`);
       }
     } finally {
       setIsDeletingFiltered(false);
+      setDeleteProgress(null);
     }
-  }, [deleteMessage, mailboxData.messageRefs]);
+  }, [deleteMessage, mailboxData.messageRefs, notifySuccess, notifyError, notifyInfo]);
 
   const handleStartAnalysis = useCallback(
     async (options: { tags: string[]; maxTokens?: number; snippetLimit?: number; force?: boolean }) => {
@@ -408,6 +526,7 @@ export default function App() {
       onOpenConnectionWizard: appState.handleOpenConnectionWizard
     }),
 
+    createElement(GlobalProgressBar, { key: "global-progress", deleteProgress, purgeProgress }),
     createElement(NotificationsHost, { key: "notifications-host" }),
     createElement(BulkAnalysisPanel, {
       key: "bulk-analysis-panel",
@@ -424,7 +543,8 @@ export default function App() {
       onClearFilter: clearTagFilter,
       filteredMessageCount: mailboxData.messageCount,
       onDeleteFiltered: handleDeleteFiltered,
-      isDeletingFiltered
+      isDeletingFiltered,
+      deleteProgress
     })
   ]);
 }
@@ -578,6 +698,7 @@ function renderViewContent(
       statusUpdating: appState.statusUpdating,
       onRefresh: appState.handleRefreshEmails,
       onDeleteMessage: appState.handleDeleteMessage,
+      onPurgeSender: appState.handlePurgeSenderMessages,
       hasSenderData: appState.currentSenderGroups.length > 0
     });
   }

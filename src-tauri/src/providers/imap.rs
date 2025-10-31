@@ -112,17 +112,22 @@ fn fetch_recent_blocking(
 
     session.select("INBOX")?;
 
-    let uids = session.uid_search("ALL")?;
+    // Use UID FETCH 1:* to get all UIDs instead of SEARCH to avoid server-imposed limits
+    let fetch_results = session.uid_fetch("1:*", "UID")?;
+    let mut uids: Vec<u32> = fetch_results
+        .iter()
+        .filter_map(|fetch| fetch.uid)
+        .collect();
+
     if uids.is_empty() {
         session.logout()?;
         return Ok(Vec::new());
     }
 
-    let mut sorted = uids.into_iter().collect::<Vec<_>>();
-    sorted.sort_unstable();
-    let end = sorted.len();
+    uids.sort_unstable();
+    let end = uids.len();
     let start = end.saturating_sub(limit);
-    let selected = &sorted[start..end];
+    let selected = &uids[start..end];
     let query = selected
         .iter()
         .map(ToString::to_string)
@@ -192,18 +197,24 @@ fn fetch_all_blocking(
 
     session.select("INBOX")?;
 
-    let uids = session.uid_search("ALL")?;
+    // Use UID FETCH 1:* to get all UIDs instead of SEARCH to avoid server-imposed limits
+    // Many IMAP servers limit SEARCH ALL to 10,000 results
+    let fetch_results = session.uid_fetch("1:*", "UID")?;
+    let mut uids: Vec<u32> = fetch_results
+        .iter()
+        .filter_map(|fetch| fetch.uid)
+        .collect();
+
     if uids.is_empty() {
         session.logout()?;
         return Ok(());
     }
 
-    let mut sorted = uids.into_iter().collect::<Vec<_>>();
-    sorted.sort_unstable();
+    uids.sort_unstable();
 
     let filtered: Vec<u32> = match since_uid {
-        Some(threshold) => sorted.into_iter().filter(|uid| *uid > threshold).collect(),
-        None => sorted,
+        Some(threshold) => uids.into_iter().filter(|uid| *uid > threshold).collect(),
+        None => uids,
     };
 
     if filtered.is_empty() {

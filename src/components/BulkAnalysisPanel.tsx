@@ -17,6 +17,7 @@ interface BulkAnalysisPanelProps {
   filteredMessageCount: number;
   onDeleteFiltered: () => Promise<void>;
   isDeletingFiltered: boolean;
+  deleteProgress?: { completed: number; total: number; failed?: number } | null;
 }
 
 const PANEL_WIDTH = 380;
@@ -60,7 +61,8 @@ export default function BulkAnalysisPanel({
   onClearFilter,
   filteredMessageCount,
   onDeleteFiltered,
-  isDeletingFiltered
+  isDeletingFiltered,
+  deleteProgress
 }: BulkAnalysisPanelProps) {
   const [selectedTags, setSelectedTags] = useState<string[]>(() => lastRunTags ?? []);
   const [maxTokens, setMaxTokens] = useState(512);
@@ -512,13 +514,16 @@ export default function BulkAnalysisPanel({
                     setConfirmingDelete(false);
                     setConfirmationText("");
                   }}
+                  disabled={isDeletingFiltered}
                 />
                 <ButtonComponent
                   cssClass="e-danger"
                   content={isDeletingFiltered ? "Deleting…" : "Delete"}
-                  disabled={deleteDisabled}
+                  disabled={deleteDisabled || isDeletingFiltered}
                   onClick={() => {
                     if (!deleteDisabled) {
+                      setConfirmingDelete(false);
+                      setConfirmationText("");
                       void handleDeleteFiltered();
                     }
                   }}

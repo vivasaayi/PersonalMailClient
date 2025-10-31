@@ -179,6 +179,7 @@ export default function BlockedSendersView({
       if (!started) {
         return;
       }
+
       try {
         await onPurgeSender(trimmed);
       } catch (err) {
