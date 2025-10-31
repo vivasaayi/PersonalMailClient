@@ -2,11 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use llama_cpp::{
-    standard_sampler::StandardSampler,
-    LlamaModel,
-    LlamaParams,
-    LlamaSession,
-    SessionParams,
+    standard_sampler::StandardSampler, LlamaModel, LlamaParams, LlamaSession, SessionParams,
 };
 use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
@@ -176,7 +172,10 @@ impl LlmService {
 
     fn return_session(&self, mut session: LlamaSession) {
         if let Err(err) = session.truncate_context(0) {
-            warn!(?err, "failed to clear llama session before caching; dropping session");
+            warn!(
+                ?err,
+                "failed to clear llama session before caching; dropping session"
+            );
             return;
         }
         self.inner.session_pool.lock().push(session);

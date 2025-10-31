@@ -58,6 +58,22 @@ pub async fn delete_message(credentials: &Credentials, uid: &str) -> Result<(), 
         .map_err(|err| ProviderError::Other(format!("Background task failure: {err}")))?
 }
 
+pub async fn delete_messages(
+    credentials: &Credentials,
+    uids: &[String],
+) -> Result<(), ProviderError> {
+    if uids.is_empty() {
+        return Ok(());
+    }
+
+    let credentials = credentials.clone();
+    let items = uids.to_vec();
+
+    task::spawn_blocking(move || delete_messages_blocking(credentials, items))
+        .await
+        .map_err(|err| ProviderError::Other(format!("Background task failure: {err}")))?
+}
+
 pub async fn move_blocked(
     credentials: &Credentials,
     senders: &[String],
@@ -277,7 +293,41 @@ fn delete_message_blocking(credentials: Credentials, uid: String) -> Result<(), 
     };
 
     session.select("INBOX")?;
+    let trash_folder = credentials.provider.trash_folder();
+    let _ = session.create(trash_folder);
+    session.uid_copy(&uid, trash_folder)?;
     session.uid_store(&uid, "+FLAGS (\\Deleted)")?;
+    session.expunge()?;
+    session.logout()?;
+    Ok(())
+}
+
+fn delete_messages_blocking(
+    credentials: Credentials,
+    uids: Vec<String>,
+) -> Result<(), ProviderError> {
+    let domain = credentials
+        .custom_host
+        .as_deref()
+        .unwrap_or_else(|| credentials.provider.imap_host());
+    let port = credentials.custom_port.unwrap_or(993);
+    let tls = TlsConnector::builder()
+        .build()
+        .map_err(|err| ProviderError::Network(err.to_string()))?;
+    let client = ::imap::connect((domain, port), domain, &tls)
+        .map_err(|err| ProviderError::Network(err.to_string()))?;
+
+    let mut session = match client.login(&credentials.email, &credentials.password) {
+        Ok(session) => session,
+        Err((err, _client)) => return Err(ProviderError::Authentication(err.to_string())),
+    };
+
+    session.select("INBOX")?;
+    let trash_folder = credentials.provider.trash_folder();
+    let _ = session.create(trash_folder);
+    let sequence = uids.join(",");
+    session.uid_copy(&sequence, trash_folder)?;
+    session.uid_store(&sequence, "+FLAGS (\\Deleted)")?;
     session.expunge()?;
     session.logout()?;
     Ok(())

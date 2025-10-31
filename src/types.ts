@@ -35,6 +35,17 @@ export interface DeletedEmail {
   remote_error?: string | null;
 }
 
+export interface RemoteDeleteUpdate {
+  uid: string;
+  remote_deleted_at?: number | null;
+  remote_error?: string | null;
+}
+
+export interface RemoteDeleteStatusPayload {
+  account_email: string;
+  updates: RemoteDeleteUpdate[];
+}
+
 export type SenderStatus = "neutral" | "allowed" | "blocked";
 
 export interface AnalyzedMessage {

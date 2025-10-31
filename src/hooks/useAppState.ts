@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
+import { listen } from "@tauri-apps/api/event";
 import type {
   Account,
   ConnectAccountResponse,
   SavedAccount,
   Provider,
   SenderStatus,
-  DeletedEmail
+  DeletedEmail,
+  RemoteDeleteStatusPayload
 } from "../types";
 import { useAccountsStore } from "../stores/accountsStore";
 import { useNotifications } from "../stores/notifications";
@@ -48,6 +50,11 @@ export function useAppState() {
   // Custom hooks for different state domains
   const emailState = useEmailState();
   const uiState = useUIState(accounts);
+  const deletedEmailsRef = useRef<Record<string, DeletedEmail[]>>({});
+
+  useEffect(() => {
+    deletedEmailsRef.current = emailState.deletedEmailsByAccount;
+  }, [emailState.deletedEmailsByAccount]);
   
   const syncOps = useSyncOperations({
     accounts,
@@ -142,6 +149,44 @@ export function useAppState() {
       console.error("Failed to load saved accounts", err);
     });
   }, [loadSavedAccounts]);
+
+  useEffect(() => {
+    let mounted = true;
+    let cleanup: (() => void) | undefined;
+
+    listen<RemoteDeleteStatusPayload>("remote-delete-status", (event) => {
+      if (!event.payload) return;
+      const payload = event.payload;
+      emailState.updateDeletedEmailStatus(payload.account_email, payload.updates);
+
+      const existing = deletedEmailsRef.current[payload.account_email] ?? [];
+      for (const update of payload.updates) {
+        const target = existing.find((item) => item.uid === update.uid);
+        const subject = target?.subject?.trim() ? target.subject : "(No subject)";
+
+        if (typeof update.remote_error === "string" && update.remote_error) {
+          notifyError(`Remote delete failed for "${subject}": ${update.remote_error}`);
+        } else if (typeof update.remote_deleted_at === "number") {
+          notifySuccess(`Deleted from server: ${subject}`);
+        }
+      }
+    })
+      .then((unlisten) => {
+        if (!mounted) {
+          unlisten();
+        } else {
+          cleanup = unlisten;
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to register remote delete listener", err);
+      });
+
+    return () => {
+      mounted = false;
+      if (cleanup) cleanup();
+    };
+  }, [emailState.updateDeletedEmailStatus, notifyError, notifySuccess]);
 
   // Apply connect response
   const applyConnectResponse = useCallback(

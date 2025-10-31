@@ -235,6 +235,42 @@ export function useEmailState() {
     });
   }, []);
 
+  const updateDeletedEmailStatus = useCallback(
+    (accountEmail: string, updates: Array<{ uid: string; remote_deleted_at?: number | null; remote_error?: string | null }>) => {
+      if (!updates.length) return;
+      setDeletedEmailsByAccount((prev) => {
+        const existing = prev[accountEmail];
+        if (!existing) return prev;
+
+        const updateMap = new Map<string, { remote_deleted_at?: number | null; remote_error?: string | null }>();
+        for (const update of updates) {
+          updateMap.set(update.uid, {
+            remote_deleted_at: update.remote_deleted_at,
+            remote_error: update.remote_error
+          });
+        }
+
+        const next = existing.map((email) => {
+          const patch = updateMap.get(email.uid);
+          if (!patch) return email;
+          return {
+            ...email,
+            remote_deleted_at:
+              typeof patch.remote_deleted_at === "undefined" ? email.remote_deleted_at ?? null : patch.remote_deleted_at ?? null,
+            remote_error:
+              typeof patch.remote_error === "undefined" ? email.remote_error ?? null : patch.remote_error ?? null
+          };
+        });
+
+        return {
+          ...prev,
+          [accountEmail]: next
+        };
+      });
+    },
+    []
+  );
+
   return {
     emailsByAccount,
     cachedCountsByAccount,
@@ -251,6 +287,7 @@ export function useEmailState() {
     updateSenderStatus,
     deleteMessageFromGroups,
     addDeletedEmail,
+    updateDeletedEmailStatus,
     setEmailsByAccount,
     setDeletedEmailsByAccount
   };

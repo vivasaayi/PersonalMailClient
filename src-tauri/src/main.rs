@@ -193,7 +193,14 @@ const BULK_ACTIONABILITY_VALUES: &[&str] = &[
     "delegate",
     "auto-archive",
 ];
-const BULK_RISK_VALUES: &[&str] = &["none", "sensitive", "financial", "PII", "security-critical", "phishing-suspect"];
+const BULK_RISK_VALUES: &[&str] = &[
+    "none",
+    "sensitive",
+    "financial",
+    "PII",
+    "security-critical",
+    "phishing-suspect",
+];
 const BULK_SOURCE_VALUES: &[&str] = &["human", "automated system", "bot/no-reply"];
 const BULK_THREAD_ROLE_VALUES: &[&str] = &["new thread", "reply", "forward", "digest"];
 const BULK_LIFECYCLE_VALUES: &[&str] = &["new", "snoozed", "pending", "done", "archived"];
@@ -350,7 +357,10 @@ fn parse_bulk_json(raw: &str) -> Result<Value, String> {
                 return Ok(parsed);
             }
         }
-        return Err(format!("failed to parse JSON object from model: {}", serde_json::from_str::<Value>(&slice).unwrap_err()));
+        return Err(format!(
+            "failed to parse JSON object from model: {}",
+            serde_json::from_str::<Value>(&slice).unwrap_err()
+        ));
     }
     Err("model response did not contain valid JSON".to_string())
 }
@@ -389,7 +399,10 @@ fn repair_json(raw: &str) -> Option<String> {
     Some(repaired.to_string())
 }
 
-fn normalize_bulk_output(raw: Value, allowed_tags: &[String]) -> Result<NormalizedBulkAnalysis, String> {
+fn normalize_bulk_output(
+    raw: Value,
+    allowed_tags: &[String],
+) -> Result<NormalizedBulkAnalysis, String> {
     let object = raw
         .as_object()
         .ok_or_else(|| "model response must be a JSON object".to_string())?;
@@ -675,7 +688,11 @@ async fn process_bulk_message(
     );
 }
 
-fn build_bulk_prompt(allowed_tags: &[String], message: &MessageForAnalysis, snippet_limit: usize) -> String {
+fn build_bulk_prompt(
+    allowed_tags: &[String],
+    message: &MessageForAnalysis,
+    snippet_limit: usize,
+) -> String {
     let mut sorted_tags = allowed_tags.to_vec();
     sorted_tags.sort();
     let tags_block = if sorted_tags.is_empty() {
@@ -705,7 +722,10 @@ fn build_bulk_prompt(allowed_tags: &[String], message: &MessageForAnalysis, snip
     let sender_email = &message.sender_email;
     let message_id = message.message_id;
     let date = message.date.as_deref().unwrap_or("(unknown date)");
-    let snippet = message.snippet.as_deref().unwrap_or("(no snippet available)");
+    let snippet = message
+        .snippet
+        .as_deref()
+        .unwrap_or("(no snippet available)");
     let clipped_snippet = clip_text(snippet, snippet_limit);
 
     format!(
@@ -973,12 +993,15 @@ async fn ensure_model_downloaded(
         // Emit progress event
         if total_size > 0 {
             let progress = (downloaded as f64 / total_size as f64 * 100.0) as u32;
-            let _ = app.emit_all("model-download-progress", serde_json::json!({
-                "model_id": model.id,
-                "downloaded": downloaded,
-                "total": total_size,
-                "progress": progress
-            }));
+            let _ = app.emit_all(
+                "model-download-progress",
+                serde_json::json!({
+                    "model_id": model.id,
+                    "downloaded": downloaded,
+                    "total": total_size,
+                    "progress": progress
+                }),
+            );
         }
     }
 
@@ -992,12 +1015,15 @@ async fn ensure_model_downloaded(
         .map_err(|err| format!("failed to finalize model file: {err}"))?;
 
     // Emit completion event
-    let _ = app.emit_all("model-download-progress", serde_json::json!({
-        "model_id": model.id,
-        "downloaded": total_size,
-        "total": total_size,
-        "progress": 100
-    }));
+    let _ = app.emit_all(
+        "model-download-progress",
+        serde_json::json!({
+            "model_id": model.id,
+            "downloaded": total_size,
+            "total": total_size,
+            "progress": 100
+        }),
+    );
 
     Ok(target_path)
 }
@@ -1737,26 +1763,44 @@ async fn delete_message(
         .map_err(|err| err.to_string())?
         .ok_or_else(|| "Message not found in local cache".to_string())?;
 
-    match providers::delete_message(&credentials, &uid).await {
-        Ok(_) => {
-            let now = Utc::now().timestamp();
-            state
-                .storage
-                .mark_deleted_remote(&normalized_email, &uid, Some(now), None)
-                .await
-                .map_err(|err| err.to_string())?;
-            archived.remote_deleted_at = Some(now);
-            archived.remote_error = None;
-        }
-        Err(err) => {
-            error!(%normalized_email, %uid, ?err, "remote delete failed");
-            let message = provider_error_to_message(err);
-            state
-                .storage
-                .mark_deleted_remote(&normalized_email, &uid, None, Some(message.clone()))
-                .await
-                .map_err(|err| err.to_string())?;
-            archived.remote_error = Some(message);
+    let queue = state.remote_delete.clone();
+    if let Err(err) = queue
+        .enqueue(&normalized_email, credentials.clone(), uid.clone())
+        .await
+    {
+        warn!(
+            %normalized_email,
+            %uid,
+            ?err,
+            "failed to enqueue remote delete; attempting synchronous fallback"
+        );
+
+        match providers::delete_message(&credentials, &uid).await {
+            Ok(_) => {
+                let now = Utc::now().timestamp();
+                state
+                    .storage
+                    .mark_deleted_remote(&normalized_email, &uid, Some(now), None)
+                    .await
+                    .map_err(|err| err.to_string())?;
+                archived.remote_deleted_at = Some(now);
+                archived.remote_error = None;
+            }
+            Err(delete_err) => {
+                error!(
+                    %normalized_email,
+                    %uid,
+                    ?delete_err,
+                    "remote delete fallback failed"
+                );
+                let message = provider_error_to_message(delete_err);
+                state
+                    .storage
+                    .mark_deleted_remote(&normalized_email, &uid, None, Some(message.clone()))
+                    .await
+                    .map_err(|err| err.to_string())?;
+                archived.remote_error = Some(message);
+            }
         }
     }
 
@@ -2446,7 +2490,11 @@ fn main() {
                 }
             }
 
-            app.manage(AppState::new(storage.clone(), llm_service));
+            app.manage(AppState::new(
+                app.app_handle(),
+                storage.clone(),
+                llm_service,
+            ));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

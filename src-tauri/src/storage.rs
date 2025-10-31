@@ -391,16 +391,10 @@ impl Storage {
             ("model_id", "model_id TEXT"),
             ("analyzed", "analyzed INTEGER NOT NULL DEFAULT 0"),
             ("analyzed_at", "analyzed_at INTEGER"),
-            (
-                "analysis_confidence",
-                "analysis_confidence REAL",
-            ),
+            ("analysis_confidence", "analysis_confidence REAL"),
             ("validator_model_id", "validator_model_id TEXT"),
             ("validation_status", "validation_status TEXT"),
-            (
-                "validation_confidence",
-                "validation_confidence REAL",
-            ),
+            ("validation_confidence", "validation_confidence REAL"),
             ("validation_notes", "validation_notes TEXT"),
             ("validated_at", "validated_at INTEGER"),
         ];
@@ -491,16 +485,17 @@ impl Storage {
     }
 
     pub async fn archive_message(
-            &self,
-            account_email: &str,
-            uid: &str,
-        ) -> Result<Option<DeletedMessageRow>> {
-            let conn = self.conn.clone();
-            let cipher = self.cipher.clone();
-            let account = account_email.to_owned();
-            let uid_value = uid.to_owned();
+        &self,
+        account_email: &str,
+        uid: &str,
+    ) -> Result<Option<DeletedMessageRow>> {
+        let conn = self.conn.clone();
+        let cipher = self.cipher.clone();
+        let account = account_email.to_owned();
+        let uid_value = uid.to_owned();
 
-            let join_result = tokio::task::spawn_blocking(move || -> Result<Option<DeletedMessageRow>> {
+        let join_result =
+            tokio::task::spawn_blocking(move || -> Result<Option<DeletedMessageRow>> {
                 let now = Utc::now().timestamp();
                 let mut conn = conn.lock();
                 let tx = conn.transaction()?;
@@ -525,22 +520,21 @@ impl Storage {
                         "#,
                     )?;
 
-                    stmt
-                        .query_row(params![account, uid_value], |row| {
-                            Ok((
-                                row.get::<_, String>(0)?,
-                                row.get::<_, String>(1)?,
-                                row.get::<_, Option<String>>(2)?,
-                                row.get::<_, String>(3)?,
-                                row.get::<_, Option<String>>(4)?,
-                                row.get::<_, Option<String>>(5)?,
-                                row.get::<_, Option<String>>(6)?,
-                                row.get::<_, Option<String>>(7)?,
-                                row.get::<_, Option<String>>(8)?,
-                                row.get::<_, Option<String>>(9)?,
-                            ))
-                        })
-                        .optional()?
+                    stmt.query_row(params![account, uid_value], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, Option<String>>(4)?,
+                            row.get::<_, Option<String>>(5)?,
+                            row.get::<_, Option<String>>(6)?,
+                            row.get::<_, Option<String>>(7)?,
+                            row.get::<_, Option<String>>(8)?,
+                            row.get::<_, Option<String>>(9)?,
+                        ))
+                    })
+                    .optional()?
                 };
 
                 let Some((
@@ -554,7 +548,8 @@ impl Storage {
                     analysis_summary,
                     analysis_sentiment,
                     analysis_categories,
-                )) = source else {
+                )) = source
+                else {
                     return Ok(None);
                 };
 
@@ -657,59 +652,59 @@ impl Storage {
             .await
             .map_err(map_join_error)?;
 
-            join_result
-        }
+        join_result
+    }
 
-        pub async fn mark_deleted_remote(
-            &self,
-            account_email: &str,
-            uid: &str,
-            remote_deleted_at: Option<i64>,
-            remote_error: Option<String>,
-        ) -> Result<()> {
-            let conn = self.conn.clone();
-            let account = account_email.to_owned();
-            let message_uid = uid.to_owned();
+    pub async fn mark_deleted_remote(
+        &self,
+        account_email: &str,
+        uid: &str,
+        remote_deleted_at: Option<i64>,
+        remote_error: Option<String>,
+    ) -> Result<()> {
+        let conn = self.conn.clone();
+        let account = account_email.to_owned();
+        let message_uid = uid.to_owned();
 
-            let join_result = tokio::task::spawn_blocking(move || -> Result<()> {
-                let conn = conn.lock();
-                conn.execute(
-                    r#"
+        let join_result = tokio::task::spawn_blocking(move || -> Result<()> {
+            let conn = conn.lock();
+            conn.execute(
+                r#"
                     UPDATE deleted_messages
                     SET remote_deleted_at = ?, remote_error = ?
                     WHERE account_email = ? AND uid = ?
                     "#,
-                    params![
-                        remote_deleted_at,
-                        remote_error.as_deref(),
-                        account,
-                        message_uid,
-                    ],
-                )?;
-                Ok(())
-            })
-            .await
-            .map_err(map_join_error)?;
+                params![
+                    remote_deleted_at,
+                    remote_error.as_deref(),
+                    account,
+                    message_uid,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(map_join_error)?;
 
-            join_result
-        }
+        join_result
+    }
 
-        pub async fn list_deleted_messages(
-            &self,
-            account_email: &str,
-            limit: Option<usize>,
-            offset: Option<usize>,
-        ) -> Result<Vec<DeletedMessageRow>> {
-            let conn = self.conn.clone();
-            let cipher = self.cipher.clone();
-            let account = account_email.to_owned();
-            let limit = limit.unwrap_or(500) as i64;
-            let offset = offset.unwrap_or(0) as i64;
+    pub async fn list_deleted_messages(
+        &self,
+        account_email: &str,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> Result<Vec<DeletedMessageRow>> {
+        let conn = self.conn.clone();
+        let cipher = self.cipher.clone();
+        let account = account_email.to_owned();
+        let limit = limit.unwrap_or(500) as i64;
+        let offset = offset.unwrap_or(0) as i64;
 
-            let join_result = tokio::task::spawn_blocking(move || -> Result<Vec<DeletedMessageRow>> {
-                let conn = conn.lock();
-                let mut stmt = conn.prepare(
-                    r#"
+        let join_result = tokio::task::spawn_blocking(move || -> Result<Vec<DeletedMessageRow>> {
+            let conn = conn.lock();
+            let mut stmt = conn.prepare(
+                r#"
                     SELECT
                         uid,
                         sender_email,
@@ -728,52 +723,52 @@ impl Storage {
                     ORDER BY deleted_at DESC
                     LIMIT ? OFFSET ?
                     "#,
-                )?;
+            )?;
 
-                let mut rows = stmt.query(params![account, limit, offset])?;
-                let mut results = Vec::new();
+            let mut rows = stmt.query(params![account, limit, offset])?;
+            let mut results = Vec::new();
 
-                while let Some(row) = rows.next()? {
-                    let subject_encrypted: String = row.get(3)?;
-                    let snippet_encrypted: Option<String> = row.get(5)?;
-                    let categories_json: Option<String> = row.get(8)?;
+            while let Some(row) = rows.next()? {
+                let subject_encrypted: String = row.get(3)?;
+                let snippet_encrypted: Option<String> = row.get(5)?;
+                let categories_json: Option<String> = row.get(8)?;
 
-                    let subject = cipher.decrypt_string(&subject_encrypted)?;
-                    let snippet = snippet_encrypted
-                        .as_ref()
-                        .map(|value| cipher.decrypt_string(value))
-                        .transpose()?;
-                    let categories: Vec<String> = categories_json
-                        .as_ref()
-                        .map(|value| {
-                            serde_json::from_str(value)
-                                .map_err(|err| StorageError::Serialization(err.to_string()))
-                        })
-                        .transpose()?
-                        .unwrap_or_default();
+                let subject = cipher.decrypt_string(&subject_encrypted)?;
+                let snippet = snippet_encrypted
+                    .as_ref()
+                    .map(|value| cipher.decrypt_string(value))
+                    .transpose()?;
+                let categories: Vec<String> = categories_json
+                    .as_ref()
+                    .map(|value| {
+                        serde_json::from_str(value)
+                            .map_err(|err| StorageError::Serialization(err.to_string()))
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
 
-                    results.push(DeletedMessageRow {
-                        uid: row.get(0)?,
-                        sender_email: row.get(1)?,
-                        sender_display: row.get(2)?,
-                        subject,
-                        snippet,
-                        date: row.get(4)?,
-                        analysis_summary: row.get(6)?,
-                        analysis_sentiment: row.get(7)?,
-                        analysis_categories: categories,
-                        deleted_at: row.get(9)?,
-                        remote_deleted_at: row.get(10)?,
-                        remote_error: row.get(11)?,
-                    });
-                }
+                results.push(DeletedMessageRow {
+                    uid: row.get(0)?,
+                    sender_email: row.get(1)?,
+                    sender_display: row.get(2)?,
+                    subject,
+                    snippet,
+                    date: row.get(4)?,
+                    analysis_summary: row.get(6)?,
+                    analysis_sentiment: row.get(7)?,
+                    analysis_categories: categories,
+                    deleted_at: row.get(9)?,
+                    remote_deleted_at: row.get(10)?,
+                    remote_error: row.get(11)?,
+                });
+            }
 
-                Ok(results)
-            })
-            .await
-            .map_err(map_join_error)?;
+            Ok(results)
+        })
+        .await
+        .map_err(map_join_error)?;
 
-            join_result
+        join_result
     }
 
     pub async fn restore_deleted_message(
@@ -786,13 +781,14 @@ impl Storage {
         let account = account_email.to_owned();
         let uid_value = uid.to_owned();
 
-        let join_result = tokio::task::spawn_blocking(move || -> Result<Option<DeletedMessageRow>> {
-            let mut conn = conn.lock();
-            let tx = conn.transaction()?;
+        let join_result =
+            tokio::task::spawn_blocking(move || -> Result<Option<DeletedMessageRow>> {
+                let mut conn = conn.lock();
+                let tx = conn.transaction()?;
 
-            let source = {
-                let mut stmt = tx.prepare(
-                    r#"
+                let source = {
+                    let mut stmt = tx.prepare(
+                        r#"
                     SELECT
                         sender_email,
                         sender_display,
@@ -809,10 +805,9 @@ impl Storage {
                     FROM deleted_messages
                     WHERE account_email = ? AND uid = ?
                     "#,
-                )?;
+                    )?;
 
-                stmt
-                    .query_row(params![account, uid_value.clone()], |row| {
+                    stmt.query_row(params![account, uid_value.clone()], |row| {
                         Ok((
                             row.get::<_, String>(0)?,
                             row.get::<_, Option<String>>(1)?,
@@ -829,29 +824,30 @@ impl Storage {
                         ))
                     })
                     .optional()?
-            };
+                };
 
-            let Some((
-                sender_email,
-                sender_display,
-                subject_encrypted,
-                date,
-                snippet_encrypted,
-                flags,
-                analysis_summary,
-                analysis_sentiment,
-                analysis_categories,
-                deleted_at,
-                remote_deleted_at,
-                remote_error,
-            )) = source else {
-                return Ok(None);
-            };
+                let Some((
+                    sender_email,
+                    sender_display,
+                    subject_encrypted,
+                    date,
+                    snippet_encrypted,
+                    flags,
+                    analysis_summary,
+                    analysis_sentiment,
+                    analysis_categories,
+                    deleted_at,
+                    remote_deleted_at,
+                    remote_error,
+                )) = source
+                else {
+                    return Ok(None);
+                };
 
-            let now = Utc::now().timestamp();
+                let now = Utc::now().timestamp();
 
-            tx.execute(
-                r#"
+                tx.execute(
+                    r#"
                 INSERT INTO messages (
                     account_email,
                     uid,
@@ -875,31 +871,33 @@ impl Storage {
                     flags = excluded.flags,
                     updated_at = excluded.updated_at
                 "#,
-                params![
-                    account.clone(),
-                    uid_value.clone(),
-                    sender_email.clone(),
-                    sender_display.clone(),
-                    subject_encrypted.clone(),
-                    date.clone(),
-                    snippet_encrypted.clone(),
-                    Option::<String>::None,
-                    flags.clone(),
-                    now,
-                    now,
-                ],
-            )?;
+                    params![
+                        account.clone(),
+                        uid_value.clone(),
+                        sender_email.clone(),
+                        sender_display.clone(),
+                        subject_encrypted.clone(),
+                        date.clone(),
+                        snippet_encrypted.clone(),
+                        Option::<String>::None,
+                        flags.clone(),
+                        now,
+                        now,
+                    ],
+                )?;
 
-            let message_id: i64 = tx.query_row(
-                "SELECT id FROM messages WHERE account_email = ? AND uid = ?",
-                params![account.clone(), uid_value.clone()],
-                |row| row.get(0),
-            )?;
+                let message_id: i64 = tx.query_row(
+                    "SELECT id FROM messages WHERE account_email = ? AND uid = ?",
+                    params![account.clone(), uid_value.clone()],
+                    |row| row.get(0),
+                )?;
 
-            let categories_text = analysis_categories.clone().unwrap_or_else(|| "[]".to_string());
+                let categories_text = analysis_categories
+                    .clone()
+                    .unwrap_or_else(|| "[]".to_string());
 
-            tx.execute(
-                r#"
+                tx.execute(
+                    r#"
                 INSERT INTO analysis_results (
                     message_id,
                     summary,
@@ -931,66 +929,62 @@ impl Storage {
                     validation_notes = excluded.validation_notes,
                     validated_at = excluded.validated_at
                 "#,
-                params![
-                    message_id,
-                    analysis_summary.clone(),
-                    analysis_sentiment.clone(),
-                    categories_text.clone(),
-                    "{}",
-                    Option::<String>::None,
-                    0,
-                    Option::<i64>::None,
-                    Option::<f64>::None,
-                    Option::<String>::None,
-                    Option::<String>::None,
-                    Option::<f64>::None,
-                    Option::<String>::None,
-                    Option::<i64>::None,
-                ],
-            )?;
+                    params![
+                        message_id,
+                        analysis_summary.clone(),
+                        analysis_sentiment.clone(),
+                        categories_text.clone(),
+                        "{}",
+                        Option::<String>::None,
+                        0,
+                        Option::<i64>::None,
+                        Option::<f64>::None,
+                        Option::<String>::None,
+                        Option::<String>::None,
+                        Option::<f64>::None,
+                        Option::<String>::None,
+                        Option::<i64>::None,
+                    ],
+                )?;
 
-            tx.execute(
-                "DELETE FROM deleted_messages WHERE account_email = ? AND uid = ?",
-                params![account.clone(), uid_value],
-            )?;
+                tx.execute(
+                    "DELETE FROM deleted_messages WHERE account_email = ? AND uid = ?",
+                    params![account.clone(), uid_value],
+                )?;
 
-            tx.commit()?;
+                tx.commit()?;
 
-            let subject = cipher.decrypt_string(&subject_encrypted)?;
-            let snippet = snippet_encrypted
-                .as_ref()
-                .map(|value| cipher.decrypt_string(value))
-                .transpose()?;
-            let categories: Vec<String> = serde_json::from_str(&categories_text)
-                .map_err(|err| StorageError::Serialization(err.to_string()))
-                .unwrap_or_default();
+                let subject = cipher.decrypt_string(&subject_encrypted)?;
+                let snippet = snippet_encrypted
+                    .as_ref()
+                    .map(|value| cipher.decrypt_string(value))
+                    .transpose()?;
+                let categories: Vec<String> = serde_json::from_str(&categories_text)
+                    .map_err(|err| StorageError::Serialization(err.to_string()))
+                    .unwrap_or_default();
 
-            Ok(Some(DeletedMessageRow {
-                uid: uid_value,
-                sender_email,
-                sender_display,
-                subject,
-                snippet,
-                date,
-                analysis_summary,
-                analysis_sentiment,
-                analysis_categories: categories,
-                deleted_at,
-                remote_deleted_at,
-                remote_error,
-            }))
-        })
-        .await
-        .map_err(map_join_error)?;
+                Ok(Some(DeletedMessageRow {
+                    uid: uid_value,
+                    sender_email,
+                    sender_display,
+                    subject,
+                    snippet,
+                    date,
+                    analysis_summary,
+                    analysis_sentiment,
+                    analysis_categories: categories,
+                    deleted_at,
+                    remote_deleted_at,
+                    remote_error,
+                }))
+            })
+            .await
+            .map_err(map_join_error)?;
 
         join_result
     }
 
-    pub async fn purge_deleted_message(
-        &self,
-        account_email: &str,
-        uid: &str,
-    ) -> Result<bool> {
+    pub async fn purge_deleted_message(&self, account_email: &str, uid: &str) -> Result<bool> {
         let conn = self.conn.clone();
         let account = account_email.to_owned();
         let uid_value = uid.to_owned();

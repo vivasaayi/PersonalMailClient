@@ -89,6 +89,13 @@ pub async fn delete_message(credentials: &Credentials, uid: &str) -> Result<(), 
     imap::delete_message(credentials, uid).await
 }
 
+pub async fn delete_messages(
+    credentials: &Credentials,
+    uids: &[String],
+) -> Result<(), ProviderError> {
+    imap::delete_messages(credentials, uids).await
+}
+
 pub async fn move_blocked_to_folder(
     credentials: &Credentials,
     senders: &[String],

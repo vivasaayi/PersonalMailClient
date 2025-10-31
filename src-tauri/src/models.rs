@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{self, Display};
+use tauri::AppHandle;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::{llm::LlmService, storage::Storage};
+use crate::{llm::LlmService, remote_delete::RemoteDeleteManager, storage::Storage};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
@@ -51,6 +52,15 @@ impl Provider {
             Provider::Outlook => "Outlook / Live",
             Provider::Yahoo => "Yahoo Mail",
             Provider::Custom => "Custom IMAP",
+        }
+    }
+
+    pub fn trash_folder(&self) -> &'static str {
+        match self {
+            Provider::Gmail => "[Gmail]/Trash",
+            Provider::Outlook => "Deleted Items",
+            Provider::Yahoo => "Trash",
+            Provider::Custom => "Trash",
         }
     }
 }
@@ -139,15 +149,18 @@ pub struct AppState {
     pub storage: Storage,
     pub sync_jobs: RwLock<HashMap<String, SyncHandle>>,
     pub llm: LlmService,
+    pub remote_delete: RemoteDeleteManager,
 }
 
 impl AppState {
-    pub fn new(storage: Storage, llm: LlmService) -> Self {
+    pub fn new(app: AppHandle, storage: Storage, llm: LlmService) -> Self {
+        let remote_delete = RemoteDeleteManager::new(storage.clone(), app);
         Self {
             accounts: RwLock::new(HashMap::new()),
             storage,
             sync_jobs: RwLock::new(HashMap::new()),
             llm,
+            remote_delete,
         }
     }
 }
