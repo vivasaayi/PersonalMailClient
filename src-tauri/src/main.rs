@@ -12,11 +12,12 @@ use personal_mail_client::models::{
     SavedAccount, SyncHandle, SyncReport,
 };
 use personal_mail_client::providers::{self, ProviderError};
+use personal_mail_client::remote_delete::{ModeOverride, RemoteDeleteMetricsResponse};
 use personal_mail_client::storage::{
     AnalysisInsert, AnalysisValidation, DeletedMessageRow, MessageForAnalysis, MessageInsert,
     SenderStatus, Storage,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -33,7 +34,7 @@ use tracing::{debug, error, info, warn, Level};
 use uuid::Uuid;
 use warp::Filter;
 
-use chrono::Utc;
+use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
 use futures_util::{stream, StreamExt};
 use personal_mail_client::llm::{LlmService, LlmStatus};
 
@@ -87,6 +88,150 @@ struct SyncProgressPayload {
     fetched: usize,
     stored: usize,
     elapsed_ms: u64,
+}
+
+const AUTO_WINDOW_DAYS: i64 = 30;
+const MAX_WINDOW_PASSES: usize = 360;
+
+struct SyncAggregation {
+    total_fetched: usize,
+    total_stored: usize,
+    completed_batches: usize,
+    total_batches: usize,
+}
+
+impl SyncAggregation {
+    fn new() -> Self {
+        Self {
+            total_fetched: 0,
+            total_stored: 0,
+            completed_batches: 0,
+            total_batches: 0,
+        }
+    }
+}
+
+struct WindowOutcome {
+    fetched: usize,
+    stored: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SyncRequestArgs {
+    provider: Provider,
+    email: String,
+    chunk_size: Option<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowSyncArgs {
+    provider: Provider,
+    email: String,
+    chunk_size: Option<usize>,
+    start_epoch_ms: i64,
+    end_epoch_ms: Option<i64>,
+}
+
+async fn run_provider_fetch(
+    app: &tauri::AppHandle,
+    storage: &Storage,
+    normalized_email: &str,
+    started: Instant,
+    credentials: &Credentials,
+    since_uid: Option<u32>,
+    chunk: usize,
+    window: Option<providers::SyncWindow>,
+    flow_label: &'static str,
+    aggregation: &mut SyncAggregation,
+) -> Result<WindowOutcome, String> {
+    let (mut batch_rx, producer_handle) = providers::fetch_all(credentials, since_uid, chunk, window)
+        .await
+        .map_err(|err| {
+            error!(account = %normalized_email, mode = flow_label, ?err, "mailbox fetch start failed");
+            provider_error_to_message(err)
+        })?;
+
+    let mut window_fetched = 0usize;
+    let mut window_stored = 0usize;
+    let mut totals_recorded = false;
+
+    while let Some(batch_result) = batch_rx.recv().await {
+        if batch_result.messages.is_empty() {
+            continue;
+        }
+
+        if !totals_recorded {
+            aggregation.total_batches += batch_result.total;
+            totals_recorded = true;
+        }
+
+        let mut inserts = Vec::with_capacity(batch_result.messages.len());
+        let mut analyses = Vec::with_capacity(batch_result.messages.len());
+
+        for envelope in batch_result.messages {
+            let flags_slice = if envelope.flags.is_empty() {
+                None
+            } else {
+                Some(envelope.flags.as_slice())
+            };
+
+            let (insert, analysis) = build_records(
+                normalized_email,
+                &envelope.summary,
+                envelope.snippet.clone(),
+                envelope.body.clone(),
+                flags_slice,
+            );
+
+            inserts.push(insert);
+            analyses.push(analysis);
+        }
+
+        aggregation.total_fetched += inserts.len();
+        window_fetched += inserts.len();
+
+        if let Err(err) = storage.upsert_messages(inserts).await {
+            error!(account = %normalized_email, mode = flow_label, ?err, "failed to persist messages after sync batch");
+        } else {
+            aggregation.total_stored += batch_result.fetched;
+            window_stored += batch_result.fetched;
+        }
+
+        if let Err(err) = storage.upsert_analysis(analyses).await {
+            error!(account = %normalized_email, mode = flow_label, ?err, "failed to persist analyses after sync batch");
+        }
+
+        aggregation.completed_batches += 1;
+
+        let payload = SyncProgressPayload {
+            email: normalized_email.to_string(),
+            batch: aggregation.completed_batches,
+            total_batches: aggregation.total_batches,
+            fetched: aggregation.total_fetched,
+            stored: aggregation.total_stored,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+        };
+
+        if let Err(err) = app.emit_to("main", "full-sync-progress", &payload) {
+            warn!(account = %normalized_email, mode = flow_label, ?err, "failed to emit sync progress event");
+        }
+    }
+
+    producer_handle
+        .await
+        .map_err(|err| ProviderError::Other(format!("Background task failure: {err}")))
+        .and_then(|result| result)
+        .map_err(|err| {
+            error!(account = %normalized_email, mode = flow_label, ?err, "mailbox fetch failed");
+            provider_error_to_message(err)
+        })?;
+
+    Ok(WindowOutcome {
+        fetched: window_fetched,
+        stored: window_stored,
+    })
 }
 
 #[derive(Serialize)]
@@ -1152,6 +1297,14 @@ async fn perform_connect(
         error!(%normalized_email, ?err, "failed to persist account metadata");
     }
 
+    if let Err(err) = state
+        .remote_delete
+        .resume_account(credentials.clone())
+        .await
+    {
+        warn!(%normalized_email, ?err, "failed to resume pending remote deletes for account");
+    }
+
     info!(%normalized_email, email_count = emails.len(), "account connected successfully");
     Ok(ConnectAccountResponse { account, emails })
 }
@@ -1367,10 +1520,14 @@ async fn fetch_recent(
 async fn sync_account_full(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
-    provider: Provider,
-    email: String,
-    chunk_size: Option<usize>,
+    args: SyncRequestArgs,
 ) -> Result<SyncReport, String> {
+    let SyncRequestArgs {
+        provider,
+        email,
+        chunk_size,
+    } = args;
+
     let normalized_email = email.trim().to_lowercase();
     let chunk = chunk_size.unwrap_or(50);
 
@@ -1383,83 +1540,118 @@ async fn sync_account_full(
     };
 
     if credentials.provider != provider {
-        warn!(%normalized_email, stored_provider = ?credentials.provider, requested_provider = ?provider, "provider mismatch for full sync");
+        warn!(
+            %normalized_email,
+            stored_provider = ?credentials.provider,
+            requested_provider = ?provider,
+            "provider mismatch for full sync"
+        );
         return Err("Provider mismatch for stored credentials".into());
     }
 
-    info!(%normalized_email, chunk, "starting full mailbox sync");
+    info!(
+        %normalized_email,
+        chunk,
+        "starting full mailbox sync with automatic windowing"
+    );
+
     let started = Instant::now();
+    let mut aggregation = SyncAggregation::new();
 
-    let (mut batch_rx, producer_handle) = providers::fetch_all(&credentials, None, chunk)
-        .await
-        .map_err(|err| {
-            error!(%normalized_email, ?err, "full mailbox fetch failed");
-            provider_error_to_message(err)
-        })?;
+    let min_date = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+    let mut boundaries = Vec::with_capacity(MAX_WINDOW_PASSES + 2);
+    let mut cursor = Utc::now()
+        .date_naive()
+        .checked_add_signed(ChronoDuration::days(1))
+        .ok_or_else(|| "Failed to compute current date".to_string())?;
 
-    let mut total_fetched = 0usize;
-    let mut total_stored = 0usize;
+    boundaries.push(cursor);
 
-    while let Some(batch_result) = batch_rx.recv().await {
-        if batch_result.messages.is_empty() {
-            continue;
+    while boundaries.len() <= MAX_WINDOW_PASSES + 1 && cursor > min_date {
+        cursor = cursor
+            .checked_sub_signed(ChronoDuration::days(AUTO_WINDOW_DAYS))
+            .unwrap_or(min_date);
+
+        if cursor <= min_date {
+            boundaries.push(min_date);
+            break;
         }
 
-        let mut inserts = Vec::with_capacity(batch_result.messages.len());
-        let mut analyses = Vec::with_capacity(batch_result.messages.len());
+        boundaries.push(cursor);
+    }
 
-        for envelope in batch_result.messages {
-            let flags_slice = if envelope.flags.is_empty() {
-                None
-            } else {
-                Some(envelope.flags.as_slice())
-            };
-            let (insert, analysis) = build_records(
-                &normalized_email,
-                &envelope.summary,
-                envelope.snippet.clone(),
-                envelope.body.clone(),
-                flags_slice,
-            );
-            inserts.push(insert);
-            analyses.push(analysis);
-        }
-
-        total_fetched += inserts.len();
-
-        if let Err(err) = state.storage.upsert_messages(inserts).await {
-            error!(%normalized_email, ?err, "failed to persist messages after full sync batch");
-        } else {
-            total_stored = total_fetched;
-        }
-
-        if let Err(err) = state.storage.upsert_analysis(analyses).await {
-            error!(%normalized_email, ?err, "failed to persist analyses after full sync batch");
-        }
-
-        let elapsed_ms = started.elapsed().as_millis() as u64;
-        let payload = SyncProgressPayload {
-            email: normalized_email.clone(),
-            batch: batch_result.index,
-            total_batches: batch_result.total,
-            fetched: total_fetched,
-            stored: total_stored,
-            elapsed_ms,
-        };
-
-        if let Err(err) = app.emit_to("main", "full-sync-progress", &payload) {
-            warn!(%normalized_email, ?err, "failed to emit full-sync-progress event");
+    if let Some(&last) = boundaries.last() {
+        if last > min_date && boundaries.len() <= MAX_WINDOW_PASSES + 1 {
+            boundaries.push(min_date);
         }
     }
 
-    producer_handle
-        .await
-        .map_err(|err| ProviderError::Other(format!("Background task failure: {err}")))
-        .and_then(|result| result)
-        .map_err(|err| {
-            error!(%normalized_email, ?err, "full mailbox fetch failed");
-            provider_error_to_message(err)
-        })?;
+    let mut windows: Vec<providers::SyncWindow> = Vec::new();
+    for pair in boundaries.windows(2) {
+        let before = pair[0];
+        let since = pair[1];
+
+        if since >= before {
+            continue;
+        }
+
+        windows.push(providers::SyncWindow {
+            since,
+            before: Some(before),
+        });
+    }
+
+    if windows.is_empty() {
+        windows.push(providers::SyncWindow {
+            since: min_date,
+            before: Some(cursor.max(min_date)),
+        });
+    }
+
+    for (index, window) in windows.into_iter().enumerate() {
+        if index >= MAX_WINDOW_PASSES {
+            warn!(
+                %normalized_email,
+                processed = index,
+                "window iteration limit reached during full sync"
+            );
+            break;
+        }
+
+        let before_value = window.before.unwrap_or(min_date);
+
+        info!(
+            %normalized_email,
+            chunk,
+            window_index = index + 1,
+            since = %window.since,
+            before = %before_value,
+            "processing auto window for full sync"
+        );
+
+        let outcome = run_provider_fetch(
+            &app,
+            &state.storage,
+            &normalized_email,
+            started,
+            &credentials,
+            None,
+            chunk,
+            Some(window),
+            "full",
+            &mut aggregation,
+        )
+        .await?;
+
+        info!(
+            %normalized_email,
+            window_index = index + 1,
+            fetched = outcome.fetched,
+            stored = outcome.stored,
+            before = %before_value,
+            "completed auto window for full sync"
+        );
+    }
 
     let latest_uid = state
         .storage
@@ -1469,15 +1661,133 @@ async fn sync_account_full(
 
     state
         .storage
-        .update_sync_state(&normalized_email, latest_uid.as_deref(), true, total_stored)
+        .update_sync_state(
+            &normalized_email,
+            latest_uid.as_deref(),
+            true,
+            aggregation.total_stored,
+        )
         .await
         .map_err(|err| err.to_string())?;
 
     let duration_ms = started.elapsed().as_millis() as u64;
 
     Ok(SyncReport {
-        fetched: total_fetched,
-        stored: total_stored,
+        fetched: aggregation.total_fetched,
+        stored: aggregation.total_stored,
+        duration_ms,
+    })
+}
+
+#[tauri::command]
+async fn sync_account_window(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    args: WindowSyncArgs,
+) -> Result<SyncReport, String> {
+    let WindowSyncArgs {
+        provider,
+        email,
+        chunk_size,
+        start_epoch_ms,
+        end_epoch_ms,
+    } = args;
+
+    let normalized_email = email.trim().to_lowercase();
+    let chunk = chunk_size.unwrap_or(50);
+
+    let credentials = {
+        let accounts = state.accounts.read().await;
+        accounts
+            .get(&normalized_email)
+            .cloned()
+            .ok_or_else(|| "Account is not connected".to_string())?
+    };
+
+    if credentials.provider != provider {
+        warn!(
+            %normalized_email,
+            stored_provider = ?credentials.provider,
+            requested_provider = ?provider,
+            "provider mismatch for windowed sync"
+        );
+        return Err("Provider mismatch for stored credentials".into());
+    }
+
+    let start_date = DateTime::<Utc>::from_timestamp_millis(start_epoch_ms)
+        .ok_or_else(|| "Invalid window start timestamp".to_string())?
+        .date_naive();
+
+    let before_date = match end_epoch_ms {
+        Some(value) => {
+            let end_date = DateTime::<Utc>::from_timestamp_millis(value)
+                .ok_or_else(|| "Invalid window end timestamp".to_string())?
+                .date_naive();
+            let exclusive = end_date
+                .checked_add_signed(ChronoDuration::days(1))
+                .ok_or_else(|| "Window end is out of range".to_string())?;
+            if exclusive <= start_date {
+                return Err("Window end must be after start".into());
+            }
+            Some(exclusive)
+        }
+        None => None,
+    };
+
+    let window = providers::SyncWindow {
+        since: start_date,
+        before: before_date,
+    };
+
+    let started = Instant::now();
+    let mut aggregation = SyncAggregation::new();
+
+    let outcome = run_provider_fetch(
+        &app,
+        &state.storage,
+        &normalized_email,
+        started,
+        &credentials,
+        None,
+        chunk,
+        Some(window),
+        "window",
+        &mut aggregation,
+    )
+    .await?;
+
+    info!(
+        %normalized_email,
+        chunk,
+        since = %start_date,
+        before = ?before_date,
+        fetched = outcome.fetched,
+        stored = outcome.stored,
+        "windowed mailbox sync completed"
+    );
+
+    let latest_uid = state
+        .storage
+        .latest_uid_for_account(&normalized_email)
+        .await
+        .map_err(|err| err.to_string())?;
+
+    state
+        .storage
+        .update_sync_state(
+            &normalized_email,
+            latest_uid.as_deref(),
+            false,
+            aggregation.total_stored,
+        )
+        .await
+        .map_err(|err| err.to_string())?;
+
+    let duration_ms = started.elapsed().as_millis() as u64;
+
+    Ok(SyncReport {
+        fetched: aggregation.total_fetched,
+        stored: aggregation.total_stored,
         duration_ms,
     })
 }
@@ -1486,10 +1796,14 @@ async fn sync_account_full(
 async fn sync_account_incremental(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
-    provider: Provider,
-    email: String,
-    chunk_size: Option<usize>,
+    args: SyncRequestArgs,
 ) -> Result<SyncReport, String> {
+    let SyncRequestArgs {
+        provider,
+        email,
+        chunk_size,
+    } = args;
+
     let normalized_email = email.trim().to_lowercase();
     let chunk = chunk_size.unwrap_or(50);
 
@@ -1520,77 +1834,30 @@ async fn sync_account_incremental(
 
     info!(%normalized_email, chunk, since_uid, "starting incremental mailbox sync");
     let started = Instant::now();
+    let mut aggregation = SyncAggregation::new();
 
-    let (mut batch_rx, producer_handle) = providers::fetch_all(&credentials, since_uid, chunk)
-        .await
-        .map_err(|err| {
-            error!(%normalized_email, ?err, "incremental mailbox fetch failed");
-            provider_error_to_message(err)
-        })?;
+    let outcome = run_provider_fetch(
+        &app,
+        &state.storage,
+        &normalized_email,
+        started,
+        &credentials,
+        since_uid,
+        chunk,
+        None,
+        "incremental",
+        &mut aggregation,
+    )
+    .await?;
 
-    let mut total_fetched = 0usize;
-    let mut total_stored = 0usize;
-
-    while let Some(batch_result) = batch_rx.recv().await {
-        if batch_result.messages.is_empty() {
-            continue;
-        }
-
-        let mut inserts = Vec::with_capacity(batch_result.messages.len());
-        let mut analyses = Vec::with_capacity(batch_result.messages.len());
-
-        for envelope in batch_result.messages {
-            let flags_slice = if envelope.flags.is_empty() {
-                None
-            } else {
-                Some(envelope.flags.as_slice())
-            };
-            let (insert, analysis) = build_records(
-                &normalized_email,
-                &envelope.summary,
-                envelope.snippet.clone(),
-                envelope.body.clone(),
-                flags_slice,
-            );
-            inserts.push(insert);
-            analyses.push(analysis);
-        }
-
-        total_fetched += inserts.len();
-
-        if let Err(err) = state.storage.upsert_messages(inserts).await {
-            error!(%normalized_email, ?err, "failed to persist messages after incremental sync batch");
-        } else {
-            total_stored += batch_result.fetched;
-        }
-
-        if let Err(err) = state.storage.upsert_analysis(analyses).await {
-            error!(%normalized_email, ?err, "failed to persist analyses after incremental sync batch");
-        }
-
-        let elapsed_ms = started.elapsed().as_millis() as u64;
-        let payload = SyncProgressPayload {
-            email: normalized_email.clone(),
-            batch: batch_result.index,
-            total_batches: batch_result.total,
-            fetched: total_fetched,
-            stored: total_stored,
-            elapsed_ms,
-        };
-
-        if let Err(err) = app.emit_to("main", "full-sync-progress", &payload) {
-            warn!(%normalized_email, ?err, "failed to emit incremental-sync progress event");
-        }
-    }
-
-    producer_handle
-        .await
-        .map_err(|err| ProviderError::Other(format!("Background task failure: {err}")))
-        .and_then(|result| result)
-        .map_err(|err| {
-            error!(%normalized_email, ?err, "incremental mailbox fetch failed");
-            provider_error_to_message(err)
-        })?;
+    info!(
+        %normalized_email,
+        chunk,
+        since_uid,
+        fetched = outcome.fetched,
+        stored = outcome.stored,
+        "incremental mailbox sync completed"
+    );
 
     let latest_uid = state
         .storage
@@ -1604,7 +1871,7 @@ async fn sync_account_incremental(
             &normalized_email,
             latest_uid.as_deref(),
             false,
-            total_stored,
+            aggregation.total_stored,
         )
         .await
         .map_err(|err| err.to_string())?;
@@ -1612,8 +1879,8 @@ async fn sync_account_incremental(
     let duration_ms = started.elapsed().as_millis() as u64;
 
     Ok(SyncReport {
-        fetched: total_fetched,
-        stored: total_stored,
+        fetched: aggregation.total_fetched,
+        stored: aggregation.total_stored,
         duration_ms,
     })
 }
@@ -1941,6 +2208,57 @@ async fn purge_deleted_message(
         .purge_deleted_message(&normalized_email, &uid)
         .await
         .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+async fn get_remote_delete_metrics(
+    state: State<'_, AppState>,
+    email: String,
+) -> Result<RemoteDeleteMetricsResponse, String> {
+    let normalized_email = email.trim().to_lowercase();
+    if normalized_email.is_empty() {
+        return Err("Account email is required".into());
+    }
+
+    Ok(state
+        .remote_delete
+        .get_metrics(&normalized_email)
+        .await)
+}
+
+#[tauri::command]
+async fn set_remote_delete_mode(
+    state: State<'_, AppState>,
+    email: String,
+    mode: String,
+) -> Result<RemoteDeleteMetricsResponse, String> {
+    let normalized_email = email.trim().to_lowercase();
+    if normalized_email.is_empty() {
+        return Err("Account email is required".into());
+    }
+
+    let override_mode = match mode.trim().to_lowercase().as_str() {
+        "auto" => ModeOverride::Auto,
+        "force-batch" => ModeOverride::ForceBatch,
+        other => {
+            warn!(
+                %normalized_email,
+                requested_mode = other,
+                "invalid remote delete override mode requested"
+            );
+            return Err(format!("Unsupported remote delete mode '{other}'"));
+        }
+    };
+
+    state
+        .remote_delete
+        .set_mode(&normalized_email, override_mode)
+        .await;
+
+    Ok(state
+        .remote_delete
+        .get_metrics(&normalized_email)
+        .await)
 }
 
 #[tauri::command]
@@ -2597,6 +2915,7 @@ fn main() {
             get_saved_password,
             fetch_recent,
             sync_account_full,
+            sync_account_window,
             sync_account_incremental,
             list_sender_groups,
             set_sender_status,
@@ -2607,6 +2926,8 @@ fn main() {
             list_deleted_messages,
             restore_deleted_message,
             purge_deleted_message,
+            get_remote_delete_metrics,
+            set_remote_delete_mode,
             configure_periodic_sync,
             apply_block_filter,
             disconnect_account,

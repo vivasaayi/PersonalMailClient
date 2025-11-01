@@ -1,5 +1,6 @@
 use crate::models::{Credentials, EmailSummary};
 use ::imap::Error as ImapError;
+use chrono::NaiveDate;
 use native_tls::Error as TlsError;
 use thiserror::Error;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -71,10 +72,17 @@ pub struct BatchResult {
     pub messages: Vec<MessageEnvelope>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct SyncWindow {
+    pub since: NaiveDate,
+    pub before: Option<NaiveDate>,
+}
+
 pub async fn fetch_all(
     credentials: &Credentials,
     since_uid: Option<u32>,
     chunk_size: usize,
+    window: Option<SyncWindow>,
 ) -> Result<
     (
         UnboundedReceiver<BatchResult>,
@@ -82,7 +90,7 @@ pub async fn fetch_all(
     ),
     ProviderError,
 > {
-    imap::fetch_all(credentials, since_uid, chunk_size).await
+    imap::fetch_all(credentials, since_uid, chunk_size, window).await
 }
 
 pub async fn delete_message(credentials: &Credentials, uid: &str) -> Result<(), ProviderError> {

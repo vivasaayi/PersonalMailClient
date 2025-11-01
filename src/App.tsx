@@ -14,9 +14,10 @@ import BlockedDomainsView from "./components/BlockedDomainsView";
 import LlmAssistantView from "./components/LlmAssistantView";
 import BulkAnalysisPanel from "./components/BulkAnalysisPanel";
 import DeletedEmailsView from "./components/DeletedEmailsView";
+import RemoteDeleteMonitor from "./components/RemoteDeleteMonitor";
 import { useBulkAnalysis } from "./stores/bulkAnalysisStore";
 import { useNotifications } from "./stores/notifications";
-import type { SenderGroup } from "./types";
+import type { SenderGroup, RemoteDeleteOverrideMode } from "./types";
 
 const SYNCFUSION_BANNER_OFFSET = 72;
 
@@ -621,6 +622,7 @@ function renderViewContent(
       syncProgress: appState.syncProgress,
       onRefreshEmails: appState.handleRefreshEmails,
       onFullSync: appState.handleFullSync,
+  onWindowSync: appState.handleWindowSync,
       isSyncing: appState.isSyncing,
       isRefreshing: appState.refreshingAccount === selectedAccount,
       expandedSenderForAccount: appState.expandedSenders[selectedAccount] || null,
@@ -693,6 +695,27 @@ function renderViewContent(
 
   if (currentView === "settings") {
     return createElement(SettingsView, { key: "settings-view" });
+  }
+
+  if (currentView === "remote-delete" && selectedAccount) {
+    const normalized = selectedAccount.trim().toLowerCase();
+    const metrics = appState.remoteDeleteMetricsByAccount[normalized] ?? null;
+    const loading = appState.remoteDeleteMetricsLoading[normalized] ?? false;
+    const progress = appState.remoteDeleteProgressByAccount[normalized] ?? null;
+
+    return createElement(RemoteDeleteMonitor, {
+      key: "remote-delete-view",
+      accountEmail: selectedAccount,
+      metrics,
+      loading,
+      progress,
+      onRefresh: async () => {
+        await appState.fetchRemoteDeleteMetrics(selectedAccount, { force: true });
+      },
+      onChangeOverride: async (mode: RemoteDeleteOverrideMode) => {
+        await appState.updateRemoteDeleteOverride(selectedAccount, mode);
+      }
+    });
   }
 
   if (currentView === "sync" && selectedAccount) {

@@ -725,6 +725,69 @@ impl Storage {
         join_result
     }
 
+    pub async fn pending_remote_deletes(
+        &self,
+        account_email: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, Option<String>)>> {
+        let conn = self.conn.clone();
+        let account = account_email.to_owned();
+        let capped_limit = limit.min(500);
+
+        let join_result = tokio::task::spawn_blocking(move || -> Result<Vec<(String, Option<String>)>> {
+            let conn = conn.lock();
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT uid, remote_error
+                FROM deleted_messages
+                WHERE account_email = ?
+                  AND remote_deleted_at IS NULL
+                ORDER BY deleted_at ASC
+                LIMIT ?
+                "#,
+            )?;
+
+            let mut rows = stmt.query(params![account, capped_limit as i64])?;
+            let mut pending = Vec::new();
+
+            while let Some(row) = rows.next()? {
+                let uid: String = row.get(0)?;
+                let remote_error: Option<String> = row.get(1)?;
+                pending.push((uid, remote_error));
+            }
+
+            Ok(pending)
+        })
+        .await
+        .map_err(map_join_error)?;
+
+        join_result
+    }
+
+    pub async fn count_pending_remote_deletes(&self, account_email: &str) -> Result<usize> {
+        let conn = self.conn.clone();
+        let account = account_email.to_owned();
+
+        let join_result = tokio::task::spawn_blocking(move || -> Result<usize> {
+            let conn = conn.lock();
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT COUNT(*)
+                FROM deleted_messages
+                WHERE account_email = ?
+                  AND remote_deleted_at IS NULL
+                "#,
+            )?;
+
+            let count: i64 = stmt.query_row(params![account], |row| row.get(0))?;
+            Ok(count as usize)
+        })
+        .await
+        .map_err(map_join_error)?;
+
+        join_result
+    }
+
     pub async fn list_deleted_messages(
         &self,
         account_email: &str,

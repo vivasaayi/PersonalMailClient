@@ -8,7 +8,10 @@ import type {
   SenderStatus,
   DeletedEmail,
   RemoteDeleteStatusPayload,
-  RemoteDeleteUpdate
+  RemoteDeleteUpdate,
+  RemoteDeleteQueuedPayload,
+  RemoteDeleteMetricsResponse,
+  RemoteDeleteOverrideMode
 } from "../types";
 import { useAccountsStore } from "../stores/accountsStore";
 import type { AccountLifecycleStatus } from "../stores/accountsStore";
@@ -66,6 +69,13 @@ export function useAppState() {
   const remoteDeletePendingRef = useRef<Record<string, Set<string>>>({});
   const [remoteDeleteProgressMap, setRemoteDeleteProgressMap] = useState<
     Record<string, RemoteDeleteCounters>
+  >({});
+  const remoteDeleteMetricsFetchedAtRef = useRef<Record<string, number>>({});
+  const [remoteDeleteMetricsByAccount, setRemoteDeleteMetricsByAccount] = useState<
+    Record<string, RemoteDeleteMetricsResponse>
+  >({});
+  const [remoteDeleteMetricsLoading, setRemoteDeleteMetricsLoading] = useState<
+    Record<string, boolean>
   >({});
   
   const [purgeProgress, setPurgeProgress] = useState<{ senderEmail: string; completed: number; total: number } | null>(null);
@@ -259,6 +269,35 @@ export function useAppState() {
     let mounted = true;
     let cleanup: (() => void) | undefined;
 
+    listen<RemoteDeleteQueuedPayload>("remote-delete-queued", (event) => {
+      if (!event.payload) return;
+      const { account_email, uids } = event.payload;
+      if (!uids || uids.length === 0) {
+        return;
+      }
+      registerRemoteDeletes(account_email, uids);
+    })
+      .then((unlisten) => {
+        if (!mounted) {
+          unlisten();
+        } else {
+          cleanup = unlisten;
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to register remote delete queue listener", err);
+      });
+
+    return () => {
+      mounted = false;
+      if (cleanup) cleanup();
+    };
+  }, [registerRemoteDeletes]);
+
+  useEffect(() => {
+    let mounted = true;
+    let cleanup: (() => void) | undefined;
+
     listen<RemoteDeleteStatusPayload>("remote-delete-status", (event) => {
       if (!event.payload) return;
       const payload = event.payload;
@@ -291,6 +330,46 @@ export function useAppState() {
       if (cleanup) cleanup();
     };
   }, [emailState.updateDeletedEmailStatus, applyRemoteDeleteUpdates, notifyError]);
+
+  useEffect(() => {
+    let mounted = true;
+    let cleanup: (() => void) | undefined;
+
+    listen<RemoteDeleteMetricsResponse>("remote-delete-metrics", (event) => {
+      if (!event.payload) return;
+      const payload = event.payload;
+      const normalized = payload.account_email.trim().toLowerCase();
+      remoteDeleteMetricsFetchedAtRef.current[normalized] = Date.now();
+      setRemoteDeleteMetricsByAccount((prev) => ({
+        ...prev,
+        [normalized]: payload
+      }));
+      setRemoteDeleteMetricsLoading((prev) => {
+        if (!prev[normalized]) {
+          return prev;
+        }
+        return {
+          ...prev,
+          [normalized]: false
+        };
+      });
+    })
+      .then((unlisten) => {
+        if (!mounted) {
+          unlisten();
+        } else {
+          cleanup = unlisten;
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to register remote delete metrics listener", err);
+      });
+
+    return () => {
+      mounted = false;
+      if (cleanup) cleanup();
+    };
+  }, []);
 
   // Apply connect response
   const applyConnectResponse = useCallback(
@@ -648,6 +727,87 @@ export function useAppState() {
     ]
   );
 
+  const fetchRemoteDeleteMetrics = useCallback(
+    async (accountEmail: string, options?: { force?: boolean }) => {
+      const normalized = accountEmail.trim().toLowerCase();
+      if (!normalized) {
+        return null;
+      }
+
+      if (!options?.force) {
+        const lastFetched = remoteDeleteMetricsFetchedAtRef.current[normalized] ?? 0;
+        const cached = remoteDeleteMetricsByAccount[normalized];
+        if (cached && Date.now() - lastFetched < 10_000) {
+          return cached;
+        }
+      }
+
+      setRemoteDeleteMetricsLoading((prev) => ({
+        ...prev,
+        [normalized]: true
+      }));
+
+      try {
+        const response = await invoke<RemoteDeleteMetricsResponse>("get_remote_delete_metrics", {
+          email: normalized
+        });
+        remoteDeleteMetricsFetchedAtRef.current[normalized] = Date.now();
+        setRemoteDeleteMetricsByAccount((prev) => ({
+          ...prev,
+          [normalized]: response
+        }));
+        return response;
+      } catch (err) {
+        console.error("Failed to load remote delete metrics", err);
+        notifyError(errorMessage(err));
+        throw err;
+      } finally {
+        setRemoteDeleteMetricsLoading((prev) => ({
+          ...prev,
+          [normalized]: false
+        }));
+      }
+    },
+    [notifyError, remoteDeleteMetricsByAccount]
+  );
+
+  const updateRemoteDeleteOverride = useCallback(
+    async (accountEmail: string, mode: RemoteDeleteOverrideMode) => {
+      const normalized = accountEmail.trim().toLowerCase();
+      if (!normalized) {
+        return null;
+      }
+
+      setRemoteDeleteMetricsLoading((prev) => ({
+        ...prev,
+        [normalized]: true
+      }));
+
+      try {
+        const response = await invoke<RemoteDeleteMetricsResponse>("set_remote_delete_mode", {
+          email: normalized,
+          mode
+        });
+        remoteDeleteMetricsFetchedAtRef.current[normalized] = Date.now();
+        setRemoteDeleteMetricsByAccount((prev) => ({
+          ...prev,
+          [normalized]: response
+        }));
+        return response;
+      } catch (err) {
+        console.error("Failed to update remote delete override mode", err);
+        notifyError(errorMessage(err));
+        throw err;
+      } finally {
+        setRemoteDeleteMetricsLoading((prev) => ({
+          ...prev,
+          [normalized]: false
+        }));
+      }
+    },
+    [notifyError]
+  );
+
   return {
     // Account state
     accounts,
@@ -672,6 +832,8 @@ export function useAppState() {
     statusUpdating: syncOps.statusUpdating,
     pendingDeleteUid: syncOps.pendingDeleteUid,
     remoteDeleteProgressByAccount: remoteDeleteProgressMap,
+    remoteDeleteMetricsByAccount,
+    remoteDeleteMetricsLoading,
     selectedAccountStatusPills,
     hasMoreEmails,
     isLoadingMoreEmails: loadingMoreEmails,
@@ -708,6 +870,11 @@ export function useAppState() {
         await syncOps.handleFullSync(uiState.selectedAccount);
       }
     },
+  handleWindowSync: async (window: { start: string; end?: string | null; chunkSize?: number }) => {
+      if (uiState.selectedAccount) {
+        await syncOps.handleWindowSync(uiState.selectedAccount, window);
+      }
+    },
     handleSenderStatusChange: async (senderEmail: string, status: SenderStatus) => {
       if (uiState.selectedAccount) {
         await syncOps.handleSenderStatusChange(uiState.selectedAccount, senderEmail, status);
@@ -720,6 +887,8 @@ export function useAppState() {
     },
     handlePurgeSenderMessages,
     handleLoadMoreEmails,
+    fetchRemoteDeleteMetrics,
+    updateRemoteDeleteOverride,
     
     // Automation handlers
     handlePeriodicMinutesChange: (value: number) => {

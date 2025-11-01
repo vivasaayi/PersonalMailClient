@@ -30,6 +30,14 @@ interface UseSyncOperationsProps {
 
 const MIN_CACHE_FETCH = 1_000;
 
+const parseDateInputToUtc = (value: string): number => {
+  const parts = value.split("-");
+  if (parts.length !== 3) return Number.NaN;
+  const [year, month, day] = parts.map((part) => Number(part));
+  if (!year || !month || !day) return Number.NaN;
+  return Date.UTC(year, month - 1, day, 12, 0, 0, 0);
+};
+
 export function useSyncOperations({
   accounts,
   loadCachedEmails,
@@ -101,9 +109,11 @@ export function useSyncOperations({
 
       try {
         const report = await invoke<SyncReport>("sync_account_incremental", {
-          provider: account.provider,
-          email: account.email,
-          chunk_size: 50
+          args: {
+            provider: account.provider,
+            email: account.email,
+            chunkSize: 50
+          }
         });
 
         setSyncReports((prev) => ({
@@ -186,9 +196,11 @@ export function useSyncOperations({
 
       try {
         const report = await invoke<SyncReport>("sync_account_full", {
-          provider: account.provider,
-          email: account.email,
-          chunk_size: 50
+          args: {
+            provider: account.provider,
+            email: account.email,
+            chunkSize: 50
+          }
         });
 
         setSyncReports((prev) => ({
@@ -212,6 +224,113 @@ export function useSyncOperations({
         await loadSenderGroups(account.email);
         await loadCachedCount(account.email);
         await loadDeletedEmails(account.email);
+        setAccountLastSync(account.email, Date.now());
+        setAccountStatus(account.email, "idle");
+      } catch (err) {
+        console.error(err);
+        notifyError(errorMessage(err));
+        setAccountStatus(account.email, "error");
+      } finally {
+        setIsSyncing(false);
+        setSyncProgressByAccount((prev) => ({
+          ...prev,
+          [account.email]: null
+        }));
+        setSyncProgressByAccount((prev) => ({
+          ...prev,
+          [account.email]: null
+        }));
+      }
+    },
+    [
+      accounts,
+      loadCachedEmails,
+      loadSenderGroups,
+      loadCachedCount,
+      loadDeletedEmails,
+      maxCachedItemsByAccount,
+      notifyError,
+      notifyInfo,
+      notifySuccess,
+      setAccountStatus,
+      setAccountLastSync
+    ]
+  );
+
+  const handleWindowSync = useCallback(
+    async (
+      accountEmail: string,
+      window: { start: string; end?: string | null; chunkSize?: number }
+    ) => {
+      const account = accounts.find((acct) => acct.email === accountEmail);
+      if (!account) return;
+
+      const startMs = parseDateInputToUtc(window.start);
+      if (Number.isNaN(startMs)) {
+        notifyError("Please select a valid start date.");
+        return;
+      }
+
+      let endMs: number | null = null;
+      if (window.end) {
+        const parsedEnd = parseDateInputToUtc(window.end);
+        if (Number.isNaN(parsedEnd)) {
+          notifyError("Please select a valid end date.");
+          return;
+        }
+        if (parsedEnd <= startMs) {
+          notifyError("End date must be after the start date.");
+          return;
+        }
+        endMs = parsedEnd;
+      }
+
+      notifyInfo("Syncing selected window…");
+      setAccountStatus(account.email, "syncing");
+      setIsSyncing(true);
+      setSyncProgressByAccount((prev) => ({
+        ...prev,
+        [account.email]: {
+          email: account.email,
+          batch: 0,
+          total_batches: 0,
+          fetched: 0,
+          stored: 0,
+          elapsed_ms: 0
+        }
+      }));
+
+      try {
+        const report = await invoke<SyncReport>("sync_account_window", {
+          args: {
+            provider: account.provider,
+            email: account.email,
+            chunkSize: window.chunkSize ?? 50,
+            startEpochMs: startMs,
+            endEpochMs: endMs
+          }
+        });
+
+        setSyncReports((prev) => ({
+          ...prev,
+          [account.email]: report
+        }));
+
+        notifySuccess(
+          `Window sync stored ${report.stored} message${report.stored === 1 ? "" : "s"}.`
+        );
+
+        const fetchLimit = Math.max(
+          report.stored,
+          maxCachedItemsByAccount.current[account.email] ?? 0,
+          MIN_CACHE_FETCH
+        );
+
+        await loadCachedEmails(account.email, fetchLimit);
+        await loadSenderGroups(account.email);
+        await loadCachedCount(account.email);
+        await loadDeletedEmails(account.email);
+
         setAccountLastSync(account.email, Date.now());
         setAccountStatus(account.email, "idle");
       } catch (err) {
@@ -347,6 +466,7 @@ export function useSyncOperations({
     refreshEmailsForAccount,
     handleRefreshEmails,
     handleFullSync,
+  handleWindowSync,
     handleSenderStatusChange,
     handleDeleteMessage,
     handlePurgeSenderMessages,

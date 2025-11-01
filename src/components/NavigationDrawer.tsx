@@ -48,6 +48,12 @@ export default function NavigationDrawer({
       disabled: !selectedAccount,
     },
     {
+      id: 'remote-delete',
+      label: 'Remote Delete Monitor',
+      icon: '📈',
+      disabled: !selectedAccount,
+    },
+    {
       id: 'pivot',
       label: 'Pivot View',
       icon: '�',

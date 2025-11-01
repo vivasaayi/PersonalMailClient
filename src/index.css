@@ -868,6 +868,66 @@ select {
   gap: 10px;
 }
 
+.window-sync-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 240px;
+}
+
+.window-sync-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.35);
+  flex-wrap: wrap;
+}
+
+.window-sync-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: rgba(226, 232, 240, 0.85);
+}
+
+.window-sync-date {
+  background: rgba(15, 23, 42, 0.55);
+  color: #f8fafc;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 0.75rem;
+}
+
+.window-sync-date:focus {
+  outline: none;
+  border-color: rgba(129, 140, 248, 0.9);
+  box-shadow: 0 0 0 1px rgba(129, 140, 248, 0.45);
+}
+
+.window-sync-date::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+}
+
+.window-sync-separator {
+  font-size: 0.75rem;
+  color: rgba(226, 232, 240, 0.65);
+  padding: 0 2px;
+}
+
+.window-sync-button {
+  min-width: auto;
+  padding: 0 12px;
+  font-size: 0.75rem;
+}
+
+.window-sync-error {
+  font-size: 0.7rem;
+  color: #fecaca;
+}
+
 .mailbox-action {
   min-width: 140px;
 }

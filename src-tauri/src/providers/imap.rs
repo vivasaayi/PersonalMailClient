@@ -1,12 +1,16 @@
 use crate::models::{Credentials, EmailSummary, MailAddress};
-use crate::providers::{BatchResult, MessageEnvelope, ProviderError};
+use crate::providers::{BatchResult, MessageEnvelope, ProviderError, SyncWindow};
+use chrono::{Duration, NaiveDate};
 use ::imap::types::{Fetch, Flag};
 use ::imap_proto::types::Address;
-use native_tls::TlsConnector;
+use native_tls::{TlsConnector, TlsStream};
+use std::net::TcpStream;
 use std::time::Instant;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::{self, JoinHandle};
 use tracing::info;
+
+const MAX_UIDS_PER_SEARCH: usize = 900; // stay safely below Yahoo's 1k cap
 
 pub async fn verify_credentials(credentials: &Credentials) -> Result<(), ProviderError> {
     let credentials = credentials.clone();
@@ -32,6 +36,7 @@ pub async fn fetch_all(
     credentials: &Credentials,
     since_uid: Option<u32>,
     chunk_size: usize,
+    window: Option<SyncWindow>,
 ) -> Result<
     (
         UnboundedReceiver<BatchResult>,
@@ -41,10 +46,12 @@ pub async fn fetch_all(
 > {
     let credentials = credentials.clone();
     let chunk = chunk_size.clamp(50, 1000);
+    let window = window.clone();
     let (tx, rx) = unbounded_channel();
 
-    let handle =
-        task::spawn_blocking(move || fetch_all_blocking(credentials, since_uid, chunk, tx));
+    let handle = task::spawn_blocking(move || {
+        fetch_all_blocking(credentials, since_uid, chunk, window, tx)
+    });
 
     Ok((rx, handle))
 }
@@ -185,6 +192,7 @@ fn fetch_all_blocking(
     credentials: Credentials,
     since_uid: Option<u32>,
     chunk_size: usize,
+    window: Option<SyncWindow>,
     tx: UnboundedSender<BatchResult>,
 ) -> Result<(), ProviderError> {
     let domain = credentials
@@ -207,47 +215,11 @@ fn fetch_all_blocking(
 
     let mailbox = session.select("INBOX")?;
 
-    // Get the UID range from mailbox status to avoid overwhelming the server
-    // UIDs are not necessarily contiguous, but we can build a range query
-    let uid_next = mailbox.uid_next.unwrap_or(1);
-    
-    if uid_next <= 1 {
-        session.logout()?;
-        return Ok(());
-    }
-
-    // Build UID list by fetching in batches of 10,000 UIDs at a time
-    let mut uids: Vec<u32> = Vec::new();
-    let batch_size: u32 = 10000;
-    let mut start_uid: u32 = 1;
-    let max_uid = uid_next - 1;
-
-    while start_uid <= max_uid {
-        let end_uid = (start_uid + batch_size - 1).min(max_uid);
-        let query = format!("{}:{}", start_uid, end_uid);
-        
-        match session.uid_fetch(&query, "UID") {
-            Ok(fetch_results) => {
-                for fetch in fetch_results.iter() {
-                    if let Some(uid) = fetch.uid {
-                        uids.push(uid);
-                    }
-                }
-            }
-            Err(e) => {
-                info!(
-                    account = %credentials.email,
-                    range = %query,
-                    error = %e,
-                    "Failed to fetch UID batch, continuing with partial results"
-                );
-                // Continue with what we have so far
-                break;
-            }
-        }
-        
-        start_uid = end_uid + 1;
-    }
+    let mut uids: Vec<u32> = if let Some(window) = window {
+        collect_uids_for_window(&mut session, &credentials.email, window)?
+    } else {
+        collect_all_uids(&mut session, &credentials.email, mailbox.uid_next.unwrap_or(1))?
+    };
 
     if uids.is_empty() {
         session.logout()?;
@@ -328,6 +300,103 @@ fn fetch_all_blocking(
 
     session.logout()?;
     Ok(())
+}
+
+fn collect_all_uids(
+    session: &mut ::imap::Session<TlsStream<TcpStream>>,
+    account_email: &str,
+    uid_next: u32,
+) -> Result<Vec<u32>, ProviderError> {
+    if uid_next <= 1 {
+        return Ok(Vec::new());
+    }
+
+    let mut uids: Vec<u32> = Vec::new();
+    let batch_size: u32 = 10_000;
+    let mut start_uid: u32 = 1;
+    let max_uid = uid_next - 1;
+
+    while start_uid <= max_uid {
+        let end_uid = (start_uid + batch_size - 1).min(max_uid);
+        let query = format!("{}:{}", start_uid, end_uid);
+
+        match session.uid_fetch(&query, "UID") {
+            Ok(fetch_results) => {
+                for fetch in fetch_results.iter() {
+                    if let Some(uid) = fetch.uid {
+                        uids.push(uid);
+                    }
+                }
+            }
+            Err(err) => {
+                info!(account = %account_email, range = %query, error = %err, "failed to fetch UID batch, continuing with partial results");
+                break;
+            }
+        }
+
+        start_uid = end_uid + 1;
+    }
+
+    Ok(uids)
+}
+
+fn collect_uids_for_window(
+    session: &mut ::imap::Session<TlsStream<TcpStream>>,
+    account_email: &str,
+    window: SyncWindow,
+) -> Result<Vec<u32>, ProviderError> {
+    let mut collected = Vec::new();
+
+    if let Some(before) = window.before {
+        let mut stack = vec![(window.since, before)];
+        while let Some((start, end)) = stack.pop() {
+            if start >= end {
+                continue;
+            }
+
+            let query = format!(
+                "SINCE {} BEFORE {}",
+                format_imap_date(start),
+                format_imap_date(end)
+            );
+
+            match session.uid_search(&query) {
+                Ok(uids) => {
+                    let count = uids.len();
+                    if count >= MAX_UIDS_PER_SEARCH {
+                        let span_days = end.signed_duration_since(start).num_days();
+                        if span_days > 1 {
+                            let half = span_days / 2;
+                            let midpoint = start + Duration::days(half.max(1));
+                            if midpoint > start && midpoint < end {
+                                stack.push((midpoint, end));
+                                stack.push((start, midpoint));
+                                continue;
+                            }
+                        }
+                        info!(account = %account_email, start = %start, end = %end, count, threshold = MAX_UIDS_PER_SEARCH, "window search reached Yahoo cap; cannot split further");
+                    }
+                    collected.extend(uids);
+                }
+                Err(err) => {
+                    info!(account = %account_email, start = %start, end = %end, ?err, "failed to execute windowed search");
+                    return Err(ProviderError::from(err));
+                }
+            }
+        }
+    } else {
+        let query = format!("SINCE {}", format_imap_date(window.since));
+        let uids = session.uid_search(&query)?;
+        collected.extend(uids);
+    }
+
+    collected.sort_unstable();
+    collected.dedup();
+    Ok(collected)
+}
+
+fn format_imap_date(date: NaiveDate) -> String {
+    date.format("%d-%b-%Y").to_string()
 }
 
 fn delete_message_blocking(credentials: Credentials, uid: String) -> Result<(), ProviderError> {

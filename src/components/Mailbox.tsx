@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { ButtonComponent } from "@syncfusion/ej2-react-buttons";
 import type {
   Account,
@@ -38,6 +38,7 @@ interface MailboxProps {
   syncProgress: SyncProgress | null;
   onRefreshEmails: () => Promise<void>;
   onFullSync: () => Promise<void>;
+  onWindowSync: (window: { start: string; end?: string | null }) => Promise<void>;
   isSyncing: boolean;
   isRefreshing: boolean;
   expandedSenderForAccount: string | null;
@@ -66,6 +67,7 @@ export default function Mailbox({
   syncProgress,
   onRefreshEmails,
   onFullSync,
+  onWindowSync,
   isSyncing,
   isRefreshing,
   expandedSenderForAccount,
@@ -82,6 +84,42 @@ export default function Mailbox({
   onOpenBulkPanel,
   filteredMessageCount
 }: MailboxProps) {
+  const [windowStart, setWindowStart] = useState("");
+  const [windowEnd, setWindowEnd] = useState("");
+  const [rangeTouched, setRangeTouched] = useState(false);
+
+  const rangeError = useMemo(() => {
+    if (!windowStart) {
+      return "Select a start date.";
+    }
+    if (windowEnd && windowEnd < windowStart) {
+      return "End date must be after the start date.";
+    }
+    return null;
+  }, [windowStart, windowEnd]);
+
+  const handleWindowSyncClick = () => {
+    setRangeTouched(true);
+    if (!windowStart) {
+      return;
+    }
+    if (windowEnd && windowEnd < windowStart) {
+      return;
+    }
+
+    void onWindowSync({
+      start: windowStart,
+      end: windowEnd ? windowEnd : null
+    })
+      .then(() => {
+        setRangeTouched(false);
+      })
+      .catch(() => {
+        /* handled upstream */
+      });
+  };
+
+  const windowSyncDisabled = isSyncing || (rangeTouched && !!rangeError);
 
   const messageInsights = useMemo<Record<string, EmailInsightRecord>>(() => {
     const map: Record<string, EmailInsightRecord> = {};
@@ -133,6 +171,50 @@ export default function Mailbox({
         disabled={isSyncing}
         onClick={handleFullSyncClick}
       />
+      <div className="window-sync-wrapper">
+        <div className="window-sync-controls">
+          <label className="window-sync-label" htmlFor="window-sync-start">
+            Start
+          </label>
+          <input
+            id="window-sync-start"
+            className="window-sync-date"
+            type="date"
+            value={windowStart}
+            onChange={(event) => {
+              setWindowStart(event.target.value);
+              setRangeTouched(false);
+            }}
+            aria-label="Window start date"
+          />
+          <span className="window-sync-separator" aria-hidden="true">
+            →
+          </span>
+          <label className="window-sync-label" htmlFor="window-sync-end">
+            End
+          </label>
+          <input
+            id="window-sync-end"
+            className="window-sync-date"
+            type="date"
+            value={windowEnd}
+            onChange={(event) => {
+              setWindowEnd(event.target.value);
+              setRangeTouched(false);
+            }}
+            aria-label="Window end date"
+          />
+          <ButtonComponent
+            cssClass="ghost-button window-sync-button"
+            content={isSyncing ? "Syncing…" : "Sync range"}
+            disabled={windowSyncDisabled}
+            onClick={handleWindowSyncClick}
+          />
+        </div>
+        {rangeTouched && rangeError && (
+          <span className="window-sync-error">{rangeError}</span>
+        )}
+      </div>
     </>
   );
 

@@ -46,11 +46,44 @@ export interface RemoteDeleteStatusPayload {
   updates: RemoteDeleteUpdate[];
 }
 
+export interface RemoteDeleteQueuedPayload {
+  account_email: string;
+  uids: string[];
+}
+
 export interface RemoteDeleteProgressSummary {
   account_email: string;
   total: number;
   completed: number;
   failed: number;
+}
+
+export type RemoteDeleteOverrideMode = "auto" | "force-batch";
+
+export interface RemoteDeleteMetricsSnapshot {
+  account_email: string;
+  timestamp: number;
+  mode: string;
+  batch_size: number;
+  processed: number;
+  failed: number;
+  pending: number;
+  total_pending: number;
+  rate_per_minute: number;
+  override_mode: RemoteDeleteOverrideMode;
+}
+
+export interface RemoteDeleteMetricsHistoryEntry {
+  timestamp: number;
+  processed: number;
+  mode: string;
+  pending: number;
+}
+
+export interface RemoteDeleteMetricsResponse {
+  account_email: string;
+  latest: RemoteDeleteMetricsSnapshot;
+  history: RemoteDeleteMetricsHistoryEntry[];
 }
 
 export type SenderStatus = "neutral" | "allowed" | "blocked";
