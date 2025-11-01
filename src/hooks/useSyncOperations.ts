@@ -13,6 +13,58 @@ import { useNotifications } from "../stores/notifications";
 
 const errorMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
+const SYNC_STATE_KEY = "personal-mail-client-sync-state";
+
+// Sync state persistence interface
+interface PersistedSyncState {
+  isSyncing: boolean;
+  syncProgressByAccount: Record<string, SyncProgress | null>;
+  syncReports: Record<string, SyncReport | null>;
+  timestamp: number;
+}
+
+const saveSyncState = (state: Omit<PersistedSyncState, 'timestamp'>) => {
+  try {
+    const persistedState: PersistedSyncState = {
+      ...state,
+      timestamp: Date.now()
+    };
+    localStorage.setItem(SYNC_STATE_KEY, JSON.stringify(persistedState));
+  } catch (error) {
+    console.warn("Failed to save sync state to localStorage:", error);
+  }
+};
+
+const loadSyncState = (): PersistedSyncState | null => {
+  try {
+    const stored = localStorage.getItem(SYNC_STATE_KEY);
+    if (!stored) return null;
+
+    const parsed = JSON.parse(stored) as PersistedSyncState;
+
+    // Only restore state if it's less than 5 minutes old
+    const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+    if (parsed.timestamp < fiveMinutesAgo) {
+      localStorage.removeItem(SYNC_STATE_KEY);
+      return null;
+    }
+
+    return parsed;
+  } catch (error) {
+    console.warn("Failed to load sync state from localStorage:", error);
+    localStorage.removeItem(SYNC_STATE_KEY);
+    return null;
+  }
+};
+
+const clearSyncState = () => {
+  try {
+    localStorage.removeItem(SYNC_STATE_KEY);
+  } catch (error) {
+    console.warn("Failed to clear sync state from localStorage:", error);
+  }
+};
+
 interface UseSyncOperationsProps {
   accounts: Account[];
   loadCachedEmails: (accountEmail: string, limit?: number, scrollTop?: number) => Promise<{ cached: any[]; scrollTop?: number }>;
@@ -54,12 +106,29 @@ export function useSyncOperations({
 }: UseSyncOperationsProps) {
   const { notifyError, notifyInfo, notifySuccess } = useNotifications();
   
-  const [isSyncing, setIsSyncing] = useState(false);
+  // Load persisted sync state on initialization
+  const persistedState = loadSyncState();
+  
+  const [isSyncing, setIsSyncing] = useState(persistedState?.isSyncing ?? false);
   const [refreshingAccount, setRefreshingAccount] = useState<string | null>(null);
   const [statusUpdating, setStatusUpdating] = useState<string | null>(null);
   const [pendingDeleteUid, setPendingDeleteUid] = useState<string | null>(null);
-  const [syncReports, setSyncReports] = useState<Record<string, SyncReport | null>>({});
-  const [syncProgressByAccount, setSyncProgressByAccount] = useState<Record<string, SyncProgress | null>>({});
+  const [syncReports, setSyncReports] = useState<Record<string, SyncReport | null>>(persistedState?.syncReports ?? {});
+  const [syncProgressByAccount, setSyncProgressByAccount] = useState<Record<string, SyncProgress | null>>(persistedState?.syncProgressByAccount ?? {});
+
+  // Persist sync state whenever it changes
+  useEffect(() => {
+    if (isSyncing || Object.keys(syncProgressByAccount).length > 0 || Object.keys(syncReports).length > 0) {
+      saveSyncState({
+        isSyncing,
+        syncProgressByAccount,
+        syncReports
+      });
+    } else {
+      // Clear persisted state when sync is complete
+      clearSyncState();
+    }
+  }, [isSyncing, syncProgressByAccount, syncReports]);
 
   // Listen for sync progress events
   useEffect(() => {
@@ -456,6 +525,22 @@ export function useSyncOperations({
     });
   }, []);
 
+  const cancelSync = useCallback(async () => {
+    if (!isSyncing) return;
+
+    // Clear sync state
+    setIsSyncing(false);
+    setSyncProgressByAccount({});
+    clearSyncState();
+
+    // Reset account statuses
+    accounts.forEach(account => {
+      setAccountStatus(account.email, "idle");
+    });
+
+    notifyInfo("Sync cancelled");
+  }, [isSyncing, accounts, setAccountStatus, notifyInfo]);
+
   return {
     isSyncing,
     refreshingAccount,
@@ -466,10 +551,11 @@ export function useSyncOperations({
     refreshEmailsForAccount,
     handleRefreshEmails,
     handleFullSync,
-  handleWindowSync,
+    handleWindowSync,
     handleSenderStatusChange,
     handleDeleteMessage,
     handlePurgeSenderMessages,
-    clearSyncData
+    clearSyncData,
+    cancelSync
   };
 }

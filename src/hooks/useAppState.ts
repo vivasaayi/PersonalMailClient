@@ -853,6 +853,9 @@ export function useAppState() {
         await syncOps.handleFullSync(uiState.selectedAccount);
       }
     },
+    handleCancelSync: async () => {
+      await syncOps.cancelSync();
+    },
   handleWindowSync: async (window: { start: string; end?: string | null; chunkSize?: number }) => {
       if (uiState.selectedAccount) {
         await syncOps.handleWindowSync(uiState.selectedAccount, window);

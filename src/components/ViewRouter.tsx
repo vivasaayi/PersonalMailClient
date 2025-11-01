@@ -54,9 +54,11 @@ function ViewRouter({
         totalCachedCount={appState.totalCachedCount}
         syncReport={appState.syncReport}
         syncProgress={appState.syncProgress}
+        runtimeByEmail={appState.runtimeByEmail}
         onRefreshEmails={appState.handleRefreshEmails}
         onFullSync={appState.handleFullSync}
         onWindowSync={appState.handleWindowSync}
+        onCancelSync={appState.handleCancelSync}
         isSyncing={appState.isSyncing}
         isRefreshing={appState.refreshingAccount === selectedAccount}
         expandedSenderForAccount={appState.expandedSenders[selectedAccount] || null}

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/tauri";
 import type {
+  Account,
   ConnectAccountResponse,
   Provider,
   SavedAccount
@@ -23,6 +24,10 @@ export interface TestAccountConnectionRequest {
 
 export async function listSavedAccounts(): Promise<SavedAccount[]> {
   return invoke<SavedAccount[]>("list_saved_accounts");
+}
+
+export async function listConnectedAccounts(): Promise<Account[]> {
+  return invoke<Account[]>("list_connected_accounts");
 }
 
 export async function connectAccount(request: ConnectAccountRequest): Promise<ConnectAccountResponse> {
