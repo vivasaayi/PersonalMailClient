@@ -151,6 +151,18 @@ select {
   flex-wrap: wrap;
 }
 
+.sender-messages-sort-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sender-messages-sort-label {
+  font-size: 13px;
+  color: rgba(15, 23, 42, 0.8);
+  font-weight: 500;
+}
+
 .sender-messages-select-all .form-check-input {
   width: 18px;
   height: 18px;
@@ -388,8 +400,20 @@ select {
 }
 
 .sender-messages-footer-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 13px;
   color: rgba(15, 23, 42, 0.55);
+}
+
+.sender-messages-soft-deleted {
+  color: #f59e0b;
+  font-weight: 500;
+}
+
+.sender-messages-total {
+  color: rgba(15, 23, 42, 0.5);
 }
 
 .sender-messages-footer-actions {

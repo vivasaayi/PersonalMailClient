@@ -20,6 +20,8 @@ import { useEmailState } from "./useEmailState";
 import { useSyncOperations } from "./useSyncOperations";
 import { useUIState } from "./useUIState";
 import { useAutomationState } from "./useAutomationState";
+import { useAccountManagement } from "./useAccountManagement";
+import { useRemoteDeleteOperations } from "./useRemoteDeleteOperations";
 import { buildSyncStatusPills } from "../utils/mailboxStatus";
 
 const providerLabels: Record<Provider, string> = {
@@ -186,6 +188,8 @@ export function useAppState() {
   });
 
   const automationState = useAutomationState();
+  const accountManagement = useAccountManagement();
+  const remoteDeleteOps = useRemoteDeleteOperations();
   const [loadingMoreEmails, setLoadingMoreEmails] = useState(false);
 
   // Derived state
@@ -371,16 +375,18 @@ export function useAppState() {
     };
   }, []);
 
-  // Apply connect response
+  // Apply connect response (combines account and email logic)
   const applyConnectResponse = useCallback(
     async (payload: ConnectAccountResponse) => {
-      upsertAccount(payload.account);
+      // Handle account management
+      await accountManagement.applyConnectResponse(payload);
 
+      // Handle email state initialization
       emailState.setEmailsByAccount((prev) => ({
         ...prev,
         [payload.account.email]: payload.emails
       }));
-      
+
       emailState.maxCachedItemsByAccount.current[payload.account.email] = Math.max(
         payload.emails.length,
         MIN_CACHE_FETCH
@@ -392,7 +398,7 @@ export function useAppState() {
       uiState.setSelectedAccount(payload.account.email);
       uiState.handleNavigate("mailbox");
     },
-    [emailState, uiState, upsertAccount]
+    [accountManagement, emailState, uiState]
   );
 
   const handleAccountConnected = useCallback(
@@ -420,59 +426,36 @@ export function useAppState() {
 
   const handleConnectSavedAccount = useCallback(
     async (saved: SavedAccount) => {
-      try {
-        const payload = await connectSavedAccountAction(saved);
-        await handleAccountConnected({
-          response: payload,
-          source: "saved",
-          savedAccount: saved
-        });
-      } catch (err) {
-        console.error(err);
-        notifyError(errorMessage(err));
-      }
+      await accountManagement.handleConnectSavedAccount(saved);
     },
-    [connectSavedAccountAction, handleAccountConnected, notifyError]
+    [accountManagement]
   );
 
   const handleRemoveAccount = useCallback(
     async (email: string) => {
-      try {
-        await disconnectAccountAction(email);
-        emailState.clearAccountData(email);
-        syncOps.clearSyncData(email);
-        automationState.clearAutomationData(email);
+      await accountManagement.handleRemoveAccount(email);
+      emailState.clearAccountData(email);
+      syncOps.clearSyncData(email);
+      automationState.clearAutomationData(email);
 
-        const normalized = email.trim().toLowerCase();
-        delete remoteDeletePendingRef.current[normalized];
-        setRemoteDeleteProgressMap((prev) => {
-          if (!prev[normalized]) {
-            return prev;
-          }
-          const next = { ...prev };
-          delete next[normalized];
-          return next;
-        });
-
-        if (uiState.selectedAccount === email) {
-          uiState.setSelectedAccount(null);
-          uiState.handleNavigate("accounts");
+      const normalized = email.trim().toLowerCase();
+      delete remoteDeletePendingRef.current[normalized];
+      setRemoteDeleteProgressMap((prev) => {
+        if (!prev[normalized]) {
+          return prev;
         }
-        notifyInfo(`Disconnected and removed ${email}.`);
-      } catch (err) {
-        console.error(err);
-        notifyError(errorMessage(err));
+        const next = { ...prev };
+        delete next[normalized];
+        return next;
+      });
+
+      if (uiState.selectedAccount === email) {
+        uiState.setSelectedAccount(null);
+        uiState.handleNavigate("accounts");
       }
+      notifyInfo(`Disconnected and removed ${email}.`);
     },
-    [
-      disconnectAccountAction,
-      emailState,
-      syncOps,
-      automationState,
-      uiState,
-      notifyError,
-      notifyInfo
-    ]
+    [accountManagement, emailState, syncOps, automationState, uiState, notifyInfo]
   );
 
   // Periodic polling for emails every 30 seconds

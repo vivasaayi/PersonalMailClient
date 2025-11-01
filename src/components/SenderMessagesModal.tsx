@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
 import dayjs from "dayjs";
-import { Modal, Button as BootstrapButton, Form } from "react-bootstrap";
+import { Modal, Button as BootstrapButton, Form, Dropdown } from "react-bootstrap";
 import type { SenderGroup } from "../types";
 
 interface SenderMessagesModalProps {
@@ -12,6 +12,8 @@ interface SenderMessagesModalProps {
   onRefresh: () => Promise<void>;
   onPurgeSender: (senderEmail: string) => Promise<void>;
 }
+
+type SortOrder = "newest" | "oldest";
 
 const formatDate = (value?: string | null) => {
   if (!value) return "";
@@ -39,15 +41,36 @@ export function SenderMessagesModal({
   const [isAnalyzingMessage, setIsAnalyzingMessage] = useState(false);
   const [emailCopied, setEmailCopied] = useState(false);
   const [isPurging, setIsPurging] = useState(false);
+  const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
+  const [softDeletedUids, setSoftDeletedUids] = useState<Set<string>>(new Set());
   const copyResetTimeout = useRef<number | null>(null);
 
   const messages = useMemo(() => sender?.messages ?? [], [sender]);
+  const sortedMessages = useMemo(() => {
+    const filtered = messages.filter(message => !softDeletedUids.has(message.uid));
+    const sorted = [...filtered];
+    sorted.sort((a, b) => {
+      const dateA = dayjs(a.date);
+      const dateB = dayjs(b.date);
+      
+      if (!dateA.isValid() && !dateB.isValid()) return 0;
+      if (!dateA.isValid()) return sortOrder === "newest" ? 1 : -1;
+      if (!dateB.isValid()) return sortOrder === "newest" ? -1 : 1;
+      
+      const comparison = dateA.isAfter(dateB) ? 1 : dateA.isBefore(dateB) ? -1 : 0;
+      return sortOrder === "newest" ? -comparison : comparison;
+    });
+    return sorted;
+  }, [messages, sortOrder, softDeletedUids]);
+  
   const totalMessages = messages.length;
-  const allMessagesSelected = totalMessages > 0 && messages.every((message) => selectedMessageUids.has(message.uid));
+  const visibleMessages = sortedMessages.length;
+  const softDeletedCount = softDeletedUids.size;
+  const allMessagesSelected = totalMessages > 0 && sortedMessages.every((message) => selectedMessageUids.has(message.uid));
   const selectedCount = selectedMessageUids.size;
   const previewMessage = useMemo(
-    () => (previewUid ? messages.find((message) => message.uid === previewUid) ?? null : null),
-    [messages, previewUid]
+    () => (previewUid ? sortedMessages.find((message) => message.uid === previewUid) ?? null : null),
+    [sortedMessages, previewUid]
   );
   useEffect(() => {
     setLlmAnalysis(null);
@@ -65,6 +88,7 @@ export function SenderMessagesModal({
     setAnalysisError(null);
     setIsAnalyzingMessage(false);
     setIsPurging(false);
+    setSoftDeletedUids(new Set());
   }, [sender]);
 
   useEffect(() => {
@@ -73,12 +97,12 @@ export function SenderMessagesModal({
       return;
     }
     setPreviewUid((current) => {
-      if (current && messages.some((message) => message.uid === current)) {
+      if (current && sortedMessages.some((message) => message.uid === current)) {
         return current;
       }
-      return messages[0]?.uid ?? null;
+      return sortedMessages[0]?.uid ?? null;
     });
-  }, [messages]);
+  }, [messages, sortedMessages]);
 
   const handleToggleMessage = useCallback((uid: string) => {
     setSelectedMessageUids((prev) => {
@@ -93,14 +117,14 @@ export function SenderMessagesModal({
   }, []);
 
   const handleToggleAll = useCallback(() => {
-    if (messages.length === 0) {
+    if (sortedMessages.length === 0) {
       return;
     }
     setSelectedMessageUids((prev) => {
-      const isAllSelected = messages.every((message) => prev.has(message.uid));
-      return isAllSelected ? new Set() : new Set(messages.map((message) => message.uid));
+      const isAllSelected = sortedMessages.every((message) => prev.has(message.uid));
+      return isAllSelected ? new Set() : new Set(sortedMessages.map((message) => message.uid));
     });
-  }, [messages]);
+  }, [sortedMessages]);
 
   const handleClose = useCallback(() => {
     if (isDeleting || deletingUids.size > 0) {
@@ -114,22 +138,32 @@ export function SenderMessagesModal({
       return;
     }
 
-    setIsDeleting(true);
     const uidsToDelete = Array.from(selectedMessageUids);
+
+    // Mark messages as soft-deleted immediately for better UX
+    setSoftDeletedUids(prev => new Set([...prev, ...uidsToDelete]));
+    setSelectedMessageUids(new Set());
+
+    setIsDeleting(true);
     try {
+      // Delete messages in the background without blocking UI
       for (const uid of uidsToDelete) {
-        await onDeleteMessage(sender.sender_email, uid);
+        await onDeleteMessage(sender.sender_email, uid, { suppressNotifications: true });
       }
-      await onRefresh();
-      setSelectedMessageUids(new Set());
-      onClose();
+      // Note: We don't call onRefresh here anymore - let the remote delete queue handle updates
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error("Failed to delete messages", error);
+      // Revert soft delete on error
+      setSoftDeletedUids(prev => {
+        const next = new Set(prev);
+        uidsToDelete.forEach(uid => next.delete(uid));
+        return next;
+      });
     } finally {
       setIsDeleting(false);
     }
-  }, [isBusy, onClose, onDeleteMessage, onRefresh, selectedMessageUids, sender]);
+  }, [isBusy, selectedMessageUids, sender, onDeleteMessage]);
 
   const handlePurgeAll = useCallback(async () => {
     if (!sender || isPurging || isBusy) {
@@ -213,24 +247,33 @@ export function SenderMessagesModal({
         return;
       }
 
-      const nextPreviewCandidate = messages.find((message) => message.uid !== uid)?.uid ?? null;
+      // Mark as soft-deleted immediately
+      setSoftDeletedUids(prev => new Set([...prev, uid]));
+
+      const nextPreviewCandidate = sortedMessages.find((message) => message.uid !== uid)?.uid ?? null;
       setDeletingUids((prev) => {
         const next = new Set(prev);
         next.add(uid);
         return next;
       });
       try {
-        await onDeleteMessage(sender.sender_email, uid);
-        await onRefresh();
+        await onDeleteMessage(sender.sender_email, uid, { suppressNotifications: true });
         setSelectedMessageUids((prev) => {
           const next = new Set(prev);
           next.delete(uid);
           return next;
         });
         setPreviewUid((current) => (current === uid ? nextPreviewCandidate : current));
+        // Note: No onRefresh call - let remote delete queue handle updates
       } catch (error) {
         // eslint-disable-next-line no-console
         console.error("Failed to delete message", error);
+        // Revert soft delete on error
+        setSoftDeletedUids(prev => {
+          const next = new Set(prev);
+          next.delete(uid);
+          return next;
+        });
       } finally {
         setDeletingUids((prev) => {
           const next = new Set(prev);
@@ -239,7 +282,7 @@ export function SenderMessagesModal({
         });
       }
     },
-    [deletingUids, isBusy, messages, onDeleteMessage, onRefresh, sender]
+    [deletingUids, isBusy, sortedMessages, onDeleteMessage, sender]
   );
 
   const analyzePreviewMessage = useCallback(async () => {
@@ -329,6 +372,30 @@ Keep your response concise and format it clearly.`;
                 disabled={isBusy || totalMessages === 0}
                 onChange={handleToggleAll}
               />
+              <div className="sender-messages-sort-controls">
+                <span className="sender-messages-sort-label">Sort by date:</span>
+                <Dropdown>
+                  <Dropdown.Toggle variant="outline-secondary" size="sm" disabled={isBusy}>
+                    {sortOrder === "newest" ? "Newest first" : "Oldest first"}
+                  </Dropdown.Toggle>
+                  <Dropdown.Menu>
+                    <Dropdown.Item 
+                      active={sortOrder === "newest"} 
+                      onClick={() => setSortOrder("newest")}
+                      disabled={isBusy}
+                    >
+                      Newest first
+                    </Dropdown.Item>
+                    <Dropdown.Item 
+                      active={sortOrder === "oldest"} 
+                      onClick={() => setSortOrder("oldest")}
+                      disabled={isBusy}
+                    >
+                      Oldest first
+                    </Dropdown.Item>
+                  </Dropdown.Menu>
+                </Dropdown>
+              </div>
               <span className="sender-messages-selection-count">
                 {selectedCount === 0
                   ? "No messages selected"
@@ -339,7 +406,7 @@ Keep your response concise and format it clearly.`;
             </div>
             <div className="sender-messages-body">
               <div className="sender-message-list">
-                {messages.map((message) => {
+                {sortedMessages.map((message) => {
                   const isSelected = selectedMessageUids.has(message.uid);
                   const isPreviewed = previewUid === message.uid;
                   const isDeletingThisRow = deletingUids.has(message.uid) || isDeleting;
@@ -481,7 +548,17 @@ Keep your response concise and format it clearly.`;
       </Modal.Body>
       <Modal.Footer className="sender-messages-modal-footer">
         <div className="sender-messages-footer-meta">
-          {totalMessages} total message{totalMessages === 1 ? "" : "s"}
+          {visibleMessages} visible message{visibleMessages === 1 ? "" : "s"}
+          {softDeletedCount > 0 && (
+            <span className="sender-messages-soft-deleted">
+              ({softDeletedCount} queued for deletion)
+            </span>
+          )}
+          {totalMessages > visibleMessages && (
+            <span className="sender-messages-total">
+              of {totalMessages} total
+            </span>
+          )}
         </div>
         <div className="sender-messages-footer-actions">
           <BootstrapButton
