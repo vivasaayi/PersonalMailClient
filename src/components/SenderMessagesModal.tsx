@@ -11,6 +11,7 @@ import { VirtualizedMessageList } from "./VirtualizedMessageList";
 import MessageModalErrorBoundary from "./MessageModalErrorBoundary";
 import { useMessageModalState } from "../hooks/useMessageModalState";
 import { validateEmail, validateUid, validateAnalysisPrompt } from "../utils/validation";
+import { useNotifications } from "../stores/notifications";
 
 interface SenderMessagesModalProps {
   sender: SenderGroup | null;
@@ -39,6 +40,7 @@ export function SenderMessagesModal({
 }: SenderMessagesModalProps) {
   const messages = useMemo(() => sender?.messages ?? [], [sender]);
   const totalMessages = messages.length;
+  const { notifySuccess, notifyInfo } = useNotifications();
 
   const modalState = useMessageModalState(totalMessages);
   const {
@@ -164,11 +166,8 @@ export function SenderMessagesModal({
   }, [sortedMessages, toggleAllMessages]);
 
   const handleClose = useCallback(() => {
-    if (isDeleting || deletingUids.size > 0) {
-      return;
-    }
     onClose();
-  }, [deletingUids, isDeleting, onClose]);
+  }, [onClose]);
 
   const handleDeleteSelected = useCallback(async () => {
     if (!sender || selectedMessageUids.size === 0 || isBusy) {
@@ -182,46 +181,58 @@ export function SenderMessagesModal({
       return;
     }
 
-    // Mark messages as soft-deleted immediately for better UX
-    uidsToDelete.forEach(uid => addSoftDeletedUid(uid));
-    clearSelection();
-
-    setIsDeleting(true);
+    const count = uidsToDelete.length;
+    
+    // Submit deletions to the background framework without waiting
     try {
-      // Delete messages in the background without blocking UI
-      for (const uid of uidsToDelete) {
-        await onDeleteMessage(sender.sender_email, uid, { suppressNotifications: true });
-      }
-      // Note: We don't call onRefresh here anymore - let the remote delete queue handle updates
+      // Fire and forget - submit to deletion queue
+      Promise.all(
+        uidsToDelete.map(uid => 
+          onDeleteMessage(sender.sender_email, uid, { suppressNotifications: true })
+        )
+      ).catch(error => {
+        // eslint-disable-next-line no-console
+        console.error("Failed to submit messages for deletion", error);
+      });
+
+      // Show success notification immediately
+      notifySuccess(`${count} message${count > 1 ? 's' : ''} submitted for deletion`);
+      
+      // Close modal immediately - let the remote delete monitor show progress
+      onClose();
     } catch (error) {
       // eslint-disable-next-line no-console
-      console.error("Failed to delete messages", error);
-      // Revert soft delete on error - this would need to be handled differently in the hook
-      // For now, we'll leave this as is since the hook doesn't support reverting multiple
-    } finally {
-      setIsDeleting(false);
+      console.error("Failed to submit messages for deletion", error);
+      setAnalysisError("Failed to submit messages for deletion");
     }
-  }, [isBusy, selectedMessageUids, sender, onDeleteMessage, addSoftDeletedUid, clearSelection]);
+  }, [isBusy, selectedMessageUids, sender, onDeleteMessage, notifySuccess, onClose]);
 
   const handlePurgeAll = useCallback(async () => {
     if (!sender || isPurging || isBusy) {
       return;
     }
 
-    setIsPurging(true);
     const senderEmail = sender.sender_email;
+    const count = messages.length;
+    
     try {
-      await onPurgeSender(senderEmail);
-      setSelectedMessageUids(new Set());
-      setPreviewUid(null);
+      // Submit purge to the background framework without waiting
+      onPurgeSender(senderEmail).catch(error => {
+        // eslint-disable-next-line no-console
+        console.error("Failed to submit purge request", error);
+      });
+
+      // Show success notification immediately
+      notifyInfo(`${count} message${count > 1 ? 's' : ''} from ${senderEmail} submitted for deletion`);
+      
+      // Close modal immediately - let the remote delete monitor show progress
       onClose();
     } catch (error) {
       // eslint-disable-next-line no-console
-      console.error("Failed to purge messages for sender", error);
-    } finally {
-      setIsPurging(false);
+      console.error("Failed to submit purge request", error);
+      setAnalysisError("Failed to submit purge request");
     }
-  }, [isBusy, isPurging, onClose, onPurgeSender, sender]);
+  }, [isBusy, isPurging, onClose, onPurgeSender, sender, messages.length, notifyInfo]);
 
   useEffect(() => {
     return () => {
@@ -291,30 +302,34 @@ export function SenderMessagesModal({
         return;
       }
 
-      // Mark as soft-deleted immediately
+      // Mark as soft-deleted immediately for better UX
       addSoftDeletedUid(uid);
 
       const nextPreviewCandidate = sortedMessages.find((message) => message.uid !== uid)?.uid ?? null;
-      addDeletingUid(uid);
+      
       try {
-        await onDeleteMessage(sender.sender_email, uid, { suppressNotifications: true });
+        // Submit to deletion queue without waiting
+        onDeleteMessage(sender.sender_email, uid, { suppressNotifications: true }).catch(error => {
+          // eslint-disable-next-line no-console
+          console.error("Failed to submit message for deletion", error);
+        });
+
+        // Update UI immediately
         setSelectedMessageUids((prev) => {
           const next = new Set(prev);
           next.delete(uid);
           return next;
         });
         setPreviewUid(nextPreviewCandidate);
-        // Note: No onRefresh call - let remote delete queue handle updates
+        
+        // Show subtle feedback
+        notifySuccess("Message submitted for deletion");
       } catch (error) {
         // eslint-disable-next-line no-console
-        console.error("Failed to delete message", error);
-        // Revert soft delete on error - this would need to be handled differently in the hook
-        // For now, we'll leave this as is since the hook doesn't support reverting
-      } finally {
-        removeDeletingUid(uid);
+        console.error("Failed to submit message for deletion", error);
       }
     },
-    [deletingUids, isBusy, sortedMessages, onDeleteMessage, sender, addSoftDeletedUid, addDeletingUid, removeDeletingUid]
+    [deletingUids, isBusy, sortedMessages, onDeleteMessage, sender, addSoftDeletedUid, notifySuccess]
   );
 
   const analyzePreviewMessage = useCallback(async () => {
@@ -385,20 +400,14 @@ Keep your response concise and format it clearly.`;
         size="xl"
         fullscreen
         centered
-        backdrop={isBusy ? "static" : true}
-        keyboard={!isBusy}
+        backdrop={true}
+        keyboard={true}
         dialogClassName="sender-messages-modal"
         contentClassName="sender-messages-modal-content"
         aria-labelledby="sender-messages-modal-title"
         aria-describedby="sender-messages-modal-description"
-        onEscapeKeyDown={(event) => {
-          event.preventDefault();
-          if (!isBusy) {
-            handleClose();
-          }
-        }}
       >
-        <Modal.Header closeButton={!isBusy} className="sender-messages-modal-header">
+        <Modal.Header closeButton className="sender-messages-modal-header">
           <Modal.Title id="sender-messages-modal-title">
           <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
             <span>{title}</span>

@@ -28,7 +28,6 @@ export function ModalFooter({
   onDeleteSelected
 }: ModalFooterProps) {
   const getDeleteButtonText = () => {
-    if (isDeleting) return "Deleting…";
     if (selectedCount <= 1) return "Delete message";
     return `Delete ${selectedCount} messages`;
   };
@@ -56,7 +55,6 @@ export function ModalFooter({
         <BootstrapButton
           variant="outline-secondary"
           onClick={onClose}
-          disabled={isBusy}
           className="sender-messages-button"
           aria-label="Close message modal"
         >
@@ -65,16 +63,16 @@ export function ModalFooter({
         <BootstrapButton
           variant="outline-danger"
           onClick={onPurgeAll}
-          disabled={!hasSender || totalMessages === 0 || isBusy}
+          disabled={!hasSender || totalMessages === 0}
           className="sender-messages-button"
           aria-label={`Purge all ${totalMessages} messages from this sender`}
         >
-          {isPurging ? "Purging…" : "Purge all messages"}
+          Purge all messages
         </BootstrapButton>
         <BootstrapButton
           variant="danger"
           onClick={onDeleteSelected}
-          disabled={selectedCount === 0 || isBusy}
+          disabled={selectedCount === 0}
           className="sender-messages-button"
           aria-label={selectedCount === 0 ? "No messages selected" : `Delete ${selectedCount} selected message${selectedCount === 1 ? "" : "s"}`}
         >

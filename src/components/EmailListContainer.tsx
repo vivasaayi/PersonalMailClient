@@ -1,18 +1,17 @@
 import { useMemo } from "react";
 import EmailList from "./EmailList";
 import type { EmailSummary } from "../types";
+import type { EmailInsightRecord } from "./EmailList";
 
 interface EmailListContainerProps {
   emails: EmailSummary[];
-  selectedEmailId: string | null;
-  onEmailSelect: (emailId: string) => void;
+  messageInsights: Record<string, EmailInsightRecord | undefined>;
   onEmailAction: (emailId: string, action: string) => Promise<void>;
 }
 
 export function EmailListContainer({
   emails,
-  selectedEmailId,
-  onEmailSelect,
+  messageInsights,
   onEmailAction
 }: EmailListContainerProps) {
   const sortedEmails = useMemo(() => {
@@ -21,11 +20,19 @@ export function EmailListContainer({
     );
   }, [emails]);
 
+  if (emails.length === 0) {
+    return (
+      <div style={{ padding: "20px", textAlign: "center", color: "#6b7280" }}>
+        No emails to display
+      </div>
+    );
+  }
+
   return (
     <div style={{ flex: 1, overflow: "hidden" }}>
       <EmailList
         emails={sortedEmails}
-        messageInsights={{}} // TODO: Pass actual message insights
+        messageInsights={messageInsights}
       />
     </div>
   );

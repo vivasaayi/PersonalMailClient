@@ -1,5 +1,5 @@
-import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import type { EmailSummary, SenderStatus } from "../types";
+import { useCallback } from "react";
+import type { EmailSummary, SenderStatus, SyncProgress } from "../types";
 import type { EmailInsightRecord } from "./EmailList";
 import { SyncControls } from "./SyncControls";
 import { EmailListContainer } from "./EmailListContainer";
@@ -15,7 +15,7 @@ interface WebMailViewProps {
   isLoadingMoreEmails: boolean;
   // Sync-related props
   isSyncing: boolean;
-  syncProgress: any;
+  syncProgress: SyncProgress | null;
   lastSyncTime: number | null;
   onFullSync: () => Promise<void>;
   onCancelSync: () => Promise<void>;
@@ -37,12 +37,6 @@ export function WebMailView({
   onCancelSync,
   onRefresh
 }: WebMailViewProps) {
-  const [selectedEmailId, setSelectedEmailId] = useState<string | null>(null);
-
-  const handleEmailSelect = useCallback((emailId: string) => {
-    setSelectedEmailId(emailId);
-  }, []);
-
   const handleEmailAction = useCallback(async (emailId: string, action: string) => {
     // TODO: Implement email actions
     console.log(`Action ${action} on email ${emailId}`);
@@ -72,8 +66,7 @@ export function WebMailView({
 
       <EmailListContainer
         emails={emails}
-        selectedEmailId={selectedEmailId}
-        onEmailSelect={handleEmailSelect}
+        messageInsights={messageInsights}
         onEmailAction={handleEmailAction}
       />
     </div>
