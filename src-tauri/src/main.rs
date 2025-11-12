@@ -8,7 +8,7 @@ use oauth2::{
     AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge, RedirectUrl, Scope, TokenResponse,
 };
 use personal_mail_client::models::{
-    AppState, ConnectAccountResponse, Credentials, EmailSummary, MailAddress, Provider,
+    Account, AppState, ConnectAccountResponse, Credentials, EmailSummary, MailAddress, Provider,
     SavedAccount, SyncHandle, SyncReport,
 };
 use personal_mail_client::providers::{self, ProviderError};
@@ -1453,6 +1453,13 @@ async fn list_saved_accounts(state: State<'_, AppState>) -> Result<Vec<SavedAcco
     }
 
     Ok(saved)
+}
+
+#[tauri::command]
+async fn list_connected_accounts(state: State<'_, AppState>) -> Result<Vec<Account>, String> {
+    let accounts = state.accounts.read().await;
+    let connected = accounts.values().map(|credentials| credentials.account()).collect();
+    Ok(connected)
 }
 
 #[tauri::command]
@@ -2912,6 +2919,7 @@ fn main() {
             connect_account_saved,
             test_account_connection,
             list_saved_accounts,
+            list_connected_accounts,
             get_saved_password,
             fetch_recent,
             sync_account_full,

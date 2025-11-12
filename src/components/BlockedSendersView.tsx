@@ -17,6 +17,76 @@ import { ButtonComponent } from "@syncfusion/ej2-react-buttons";
 import { EmailActionDropdown } from "./EmailActionDropdown";
 import { SenderMessagesModal } from "./SenderMessagesModal";
 import type { SenderGroup, SenderStatus } from "../types";
+import { validateEmail } from "../utils/validation";
+
+type SenderEmailCellProps = {
+  senderEmail: string;
+  onOpenMessages: (email: string) => void;
+};
+
+const SenderEmailCell = ({ senderEmail, onOpenMessages }: SenderEmailCellProps) => (
+  <button
+    type="button"
+    className="sender-email-link"
+    onClick={() => onOpenMessages(senderEmail)}
+    aria-label={`View messages from ${senderEmail}`}
+  >
+    {senderEmail}
+  </button>
+);
+
+type StatusActionsCellProps = {
+  senderEmail: string;
+  status: SenderStatus;
+  isUpdating: boolean;
+  isPurging: boolean;
+  onStatusChange: (email: string, status: SenderStatus) => Promise<void>;
+  onPurge: (email: string) => void;
+};
+
+const StatusActionsCell = ({
+  senderEmail,
+  status,
+  isUpdating,
+  isPurging,
+  onStatusChange,
+  onPurge
+}: StatusActionsCellProps) => (
+  <div
+    style={{
+      display: "flex",
+      alignItems: "center",
+      gap: "12px",
+      width: "100%",
+      minHeight: "40px" // Ensure consistent height
+    }}
+  >
+    <div style={{ flex: 1 }}>
+      <EmailActionDropdown
+        email={senderEmail}
+        currentStatus={status}
+        size="small"
+        showLabel
+        showIcon
+        isUpdating={isUpdating}
+        onStatusChange={(nextStatus) => onStatusChange(senderEmail, nextStatus)}
+      />
+    </div>
+    <div style={{ flexShrink: 0 }}>
+      <ButtonComponent
+        cssClass="ghost-button"
+        content={isPurging ? "Purging…" : "Purge"}
+        disabled={isPurging}
+        onClick={() => onPurge(senderEmail)}
+        style={{
+          borderColor: "#fca5a5",
+          color: "#f87171",
+          minWidth: "80px" // Fixed width to prevent layout shift
+        }}
+      />
+    </div>
+  </div>
+);
 
 type SenderRow = {
   senderEmail: string;
@@ -102,9 +172,12 @@ export default function BlockedSendersView({
 
   const [activeSenderEmail, setActiveSenderEmail] = useState<string | null>(null);
   const [purgingSender, setPurgingSender] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const gridData = useMemo<SenderRow[]>(() => {
+  // Memoize the processed sender groups with latest message calculation
+  const processedSenderGroups = useMemo(() => {
     return senderGroups
+      .filter((group) => validateEmail(group.sender_email))
       .map((group) => {
         const latestMessage = group.messages.reduce((latest, candidate) => {
           if (!candidate.date) return latest;
@@ -114,21 +187,31 @@ export default function BlockedSendersView({
         }, group.messages[0] ?? null);
 
         return {
-          senderEmail: group.sender_email,
-          senderDisplay: group.sender_display || group.sender_email,
-          status: group.status,
-          messageCount: group.message_count,
-          latestDate: latestMessage?.date,
+          ...group,
+          latestMessage,
           latestFormatted: formatDate(latestMessage?.date),
           preview: latestMessage?.analysis_summary ?? latestMessage?.snippet ?? ""
-        } satisfies SenderRow;
-      })
+        };
+      });
+  }, [senderGroups]);
+
+  const gridData = useMemo<SenderRow[]>(() => {
+    return processedSenderGroups
+      .map((group) => ({
+        senderEmail: group.sender_email,
+        senderDisplay: group.sender_display || group.sender_email,
+        status: group.status,
+        messageCount: group.message_count,
+        latestDate: group.latestMessage?.date,
+        latestFormatted: group.latestFormatted,
+        preview: group.preview
+      } satisfies SenderRow))
       .sort((a, b) => {
         const byStatus = statusOrdering[a.status] - statusOrdering[b.status];
         if (byStatus !== 0) return byStatus;
         return a.senderEmail.localeCompare(b.senderEmail, undefined, { sensitivity: "base" });
       });
-  }, [senderGroups]);
+  }, [processedSenderGroups]);
 
   const activeSender = useMemo(() => {
     if (!activeSenderEmail) {
@@ -138,22 +221,36 @@ export default function BlockedSendersView({
   }, [activeSenderEmail, senderGroups]);
 
   const handleOpenSenderMessages = useCallback((senderEmail: string) => {
-    setActiveSenderEmail(senderEmail);
+    const trimmed = senderEmail.trim();
+    if (!trimmed || !validateEmail(trimmed)) {
+      setError("Invalid email address provided for opening sender messages");
+      return;
+    }
+    setError(null); // Clear any previous errors
+    setActiveSenderEmail(trimmed);
   }, []);
 
   const handleCloseMessagesModal = useCallback(() => {
     setActiveSenderEmail(null);
   }, []);
 
+  const handleRefresh = useCallback(async () => {
+    try {
+      setError(null); // Clear any previous errors
+      await onRefresh();
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : "Failed to refresh data";
+      setError(`Refresh failed: ${errorMessage}`);
+      console.error("Failed to refresh sender data", err);
+    }
+  }, [onRefresh]);
+
   const emailTemplate = useCallback(
     (props: SenderRow) => (
-      <button
-        type="button"
-        className="sender-email-link"
-        onClick={() => handleOpenSenderMessages(props.senderEmail)}
-      >
-        {props.senderEmail}
-      </button>
+      <SenderEmailCell
+        senderEmail={props.senderEmail}
+        onOpenMessages={handleOpenSenderMessages}
+      />
     ),
     [handleOpenSenderMessages]
   );
@@ -161,7 +258,8 @@ export default function BlockedSendersView({
   const handlePurgeSender = useCallback(
     async (senderEmail: string) => {
       const trimmed = senderEmail.trim();
-      if (!trimmed) {
+      if (!trimmed || !validateEmail(trimmed)) {
+        setError("Invalid email address provided for purge operation");
         return;
       }
       if (purgingSender) {
@@ -181,8 +279,11 @@ export default function BlockedSendersView({
       }
 
       try {
+        setError(null); // Clear any previous errors
         await onPurgeSender(trimmed);
       } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : "Failed to purge sender";
+        setError(`Failed to purge sender: ${errorMessage}`);
         console.error("Failed to purge sender", err);
       } finally {
         setPurgingSender((current) => (current === trimmed ? null : current));
@@ -192,38 +293,16 @@ export default function BlockedSendersView({
   );
 
   const statusActionsTemplate = useCallback(
-    (props: SenderRow) => {
-      const isPurging = purgingSender === props.senderEmail;
-      const purgeDisabled = Boolean(purgingSender);
-      return (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: "12px",
-            width: "100%"
-          }}
-        >
-          <EmailActionDropdown
-            email={props.senderEmail}
-            currentStatus={props.status}
-            size="small"
-            showLabel
-            showIcon
-            isUpdating={statusUpdating === props.senderEmail}
-            onStatusChange={(nextStatus) => onStatusChange(props.senderEmail, nextStatus)}
-          />
-          <ButtonComponent
-            cssClass="ghost-button"
-            content={isPurging ? "Purging…" : "Purge"}
-            disabled={purgeDisabled}
-            onClick={() => handlePurgeSender(props.senderEmail)}
-            style={{ borderColor: "#fca5a5", color: "#f87171" }}
-          />
-        </div>
-      );
-    },
+    (props: SenderRow) => (
+      <StatusActionsCell
+        senderEmail={props.senderEmail}
+        status={props.status}
+        isUpdating={statusUpdating === props.senderEmail}
+        isPurging={purgingSender === props.senderEmail}
+        onStatusChange={onStatusChange}
+        onPurge={handlePurgeSender}
+      />
+    ),
     [handlePurgeSender, purgingSender]
   );
 
@@ -249,7 +328,7 @@ export default function BlockedSendersView({
           cssClass="primary"
           content="Refresh now"
           onClick={() => {
-            void onRefresh();
+            void handleRefresh();
           }}
         />
       </div>
@@ -268,6 +347,43 @@ export default function BlockedSendersView({
       }}
     >
       <Container fluid className="p-0 d-flex flex-column gap-3" style={{ height: "100%" }}>
+        {error && (
+          <BootstrapRow className="g-3">
+            <Col xs={12}>
+              <div
+                style={{
+                  padding: "12px 16px",
+                  borderRadius: "8px",
+                  border: "1px solid #fca5a5",
+                  backgroundColor: "rgba(252, 165, 165, 0.1)",
+                  color: "#b91c1c",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "12px"
+                }}
+              >
+                <span>{error}</span>
+                <button
+                  type="button"
+                  onClick={() => setError(null)}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "#b91c1c",
+                    cursor: "pointer",
+                    fontSize: "18px",
+                    padding: "0",
+                    lineHeight: 1
+                  }}
+                  aria-label="Dismiss error"
+                >
+                  ×
+                </button>
+              </div>
+            </Col>
+          </BootstrapRow>
+        )}
         <BootstrapRow className="align-items-start justify-content-between g-3">
           <Col xs={12} lg="auto">
             <div>
@@ -285,7 +401,7 @@ export default function BlockedSendersView({
               cssClass="ghost-button"
               content="Refresh"
               onClick={() => {
-                void onRefresh();
+                void handleRefresh();
               }}
             />
           </Col>
@@ -307,13 +423,32 @@ export default function BlockedSendersView({
                     color: palette.fg,
                     display: "flex",
                     flexDirection: "column",
-                    gap: "4px"
+                    gap: "4px",
+                    height: "80px", // Fixed height for consistent card sizes
+                    justifyContent: "center" // Center content vertically
                   }}
+                  role="status"
+                  aria-label={`${palette.label} senders: ${total} total`}
                 >
-                  <span style={{ fontSize: "12px", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                  <span
+                    style={{
+                      fontSize: "12px",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.08em"
+                    }}
+                    aria-hidden="true"
+                  >
                     {palette.label}
                   </span>
-                  <span style={{ fontSize: "24px", fontWeight: 700 }}>{total}</span>
+                  <span
+                    style={{
+                      fontSize: "24px",
+                      fontWeight: 700
+                    }}
+                    aria-hidden="true"
+                  >
+                    {total}
+                  </span>
                 </div>
               </Col>
             );
@@ -321,7 +456,17 @@ export default function BlockedSendersView({
         </BootstrapRow>
 
         <div style={{ flex: 1, minHeight: 0 }}>
-          <div className="mail-grid-wrapper" style={{ height: "100%" }}>
+          <div
+            className="mail-grid-wrapper"
+            style={{ height: "100%" }}
+            role="region"
+            aria-label="Sender management grid"
+            aria-describedby="grid-description"
+          >
+            <div id="grid-description" style={{ display: "none" }}>
+              Grid showing sender emails with their status, message count, and latest message date.
+              Use arrow keys to navigate, Enter to open sender details.
+            </div>
             <GridComponent
               dataSource={gridData}
               allowPaging
@@ -334,6 +479,18 @@ export default function BlockedSendersView({
               rowHeight={64}
               selectionSettings={selectionSettings}
               cssClass="mail-grid"
+              rowSelected={(args) => {
+                if (args.data) {
+                  const rowData = args.data as SenderRow;
+                  handleOpenSenderMessages(rowData.senderEmail);
+                }
+              }}
+              recordDoubleClick={(args) => {
+                if (args.rowData) {
+                  const rowData = args.rowData as SenderRow;
+                  handleOpenSenderMessages(rowData.senderEmail);
+                }
+              }}
             >
               <ColumnsDirective>
                 <ColumnDirective field="senderDisplay" headerText="Sender" width="240" />

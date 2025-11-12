@@ -6,6 +6,7 @@ import {
   connectAccountWithSavedCredentials,
   disconnectAccount as disconnectAccountCommand,
   listSavedAccounts as listSavedAccountsCommand,
+  listConnectedAccounts as listConnectedAccountsCommand,
   testAccountConnection as testAccountConnectionCommand,
   type ConnectAccountRequest
 } from "../services/accounts";
@@ -27,6 +28,7 @@ interface AccountsContextValue {
   setAccountLastSync: (email: string, timestamp: number | null) => void;
   testAccountConnection: (request: TestAccountConnectionRequest) => Promise<void>;
   refreshSavedAccounts: () => Promise<SavedAccount[]>;
+  refreshConnectedAccounts: () => Promise<Account[]>;
   connectNewAccount: (request: ConnectAccountRequest) => Promise<ConnectAccountResponse>;
   connectSavedAccount: (saved: SavedAccount) => Promise<ConnectAccountResponse>;
   disconnectAccount: (email: string) => Promise<void>;
@@ -91,6 +93,23 @@ export function AccountsProvider({ children }: { children: ReactNode }) {
   const refreshSavedAccounts = useCallback(async () => {
     const records = await listSavedAccountsCommand();
     setSavedAccounts(records);
+    return records;
+  }, []);
+
+  const refreshConnectedAccounts = useCallback(async () => {
+    const records = await listConnectedAccountsCommand();
+    setAccounts(records);
+    // Initialize runtime state for connected accounts
+    setRuntimeByEmail((prev) => {
+      const nextRuntime: Record<string, AccountRuntimeState> = { ...prev };
+      records.forEach((account) => {
+        const key = normalizeEmail(account.email);
+        if (!nextRuntime[key]) {
+          nextRuntime[key] = { status: "idle", lastSync: null };
+        }
+      });
+      return nextRuntime;
+    });
     return records;
   }, []);
 
@@ -187,7 +206,10 @@ export function AccountsProvider({ children }: { children: ReactNode }) {
     refreshSavedAccounts().catch((err) => {
       console.error("Failed to load saved accounts", err);
     });
-  }, [refreshSavedAccounts]);
+    refreshConnectedAccounts().catch((err) => {
+      console.error("Failed to load connected accounts", err);
+    });
+  }, [refreshSavedAccounts, refreshConnectedAccounts]);
 
   const value = useMemo<AccountsContextValue>(
     () => ({
@@ -199,6 +221,7 @@ export function AccountsProvider({ children }: { children: ReactNode }) {
       setAccountLastSync,
   testAccountConnection,
       refreshSavedAccounts,
+      refreshConnectedAccounts,
       connectNewAccount,
       connectSavedAccount,
       disconnectAccount,
@@ -214,6 +237,7 @@ export function AccountsProvider({ children }: { children: ReactNode }) {
       setAccountLastSync,
   testAccountConnection,
       refreshSavedAccounts,
+      refreshConnectedAccounts,
       connectNewAccount,
       connectSavedAccount,
       disconnectAccount,

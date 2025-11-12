@@ -202,7 +202,7 @@ export default function EmailList({ emails, messageInsights }: EmailListProps) {
 
   useEffect(() => {
     applyGrouping(groupOption);
-  }, [applyGrouping, groupOption, gridData]);
+  }, [applyGrouping, groupOption]);
 
   const handleGroupingChange = useCallback((next: GroupOption) => {
     setGroupOption(next);
@@ -226,7 +226,6 @@ export default function EmailList({ emails, messageInsights }: EmailListProps) {
     >
       <GridComponent
         ref={gridRef}
-        key={gridData.length}
         dataSource={gridData}
         allowPaging
         pageSettings={pageSettings}

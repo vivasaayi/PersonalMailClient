@@ -8,6 +8,7 @@ import type {
   SyncProgress,
   SyncReport
 } from "../types";
+import type { AccountRuntimeState } from "../stores/accountsStore";
 import EmailList, { type EmailInsightRecord } from "./EmailList";
 import SenderGrid from "./SenderGrid";
 import { WebMailView } from "./WebMailView";
@@ -36,9 +37,11 @@ interface MailboxProps {
   totalCachedCount: number;
   syncReport: SyncReport | null;
   syncProgress: SyncProgress | null;
+  runtimeByEmail: Record<string, AccountRuntimeState>;
   onRefreshEmails: () => Promise<void>;
   onFullSync: () => Promise<void>;
   onWindowSync: (window: { start: string; end?: string | null }) => Promise<void>;
+  onCancelSync: () => Promise<void>;
   isSyncing: boolean;
   isRefreshing: boolean;
   expandedSenderForAccount: string | null;
@@ -65,9 +68,11 @@ export default function Mailbox({
   totalCachedCount,
   syncReport,
   syncProgress,
+  runtimeByEmail,
   onRefreshEmails,
   onFullSync,
   onWindowSync,
+  onCancelSync,
   isSyncing,
   isRefreshing,
   expandedSenderForAccount,
@@ -306,6 +311,12 @@ export default function Mailbox({
             hasMoreEmails={hasMoreEmails}
             onLoadMoreEmails={onLoadMoreEmails}
             isLoadingMoreEmails={isLoadingMoreEmails}
+            isSyncing={isSyncing}
+            syncProgress={syncProgress}
+            lastSyncTime={runtimeByEmail[selectedAccount]?.lastSync || null}
+            onFullSync={onFullSync}
+            onCancelSync={onCancelSync}
+            onRefresh={onRefreshEmails}
           />
         ) : (
           <SenderGrid
